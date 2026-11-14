@@ -263,6 +263,16 @@ function NS.buildSettings()
         tip = { o.tip, o.hint } })
     end
   end
+  -- Craftsman's Writs (LedgerWrits.lua): the reputation typed in, kept under S.writs
+  if NS.writOptions then
+    add({ left = "" })
+    add({ left = GOLD .. "Craftsman's Writs|r  " .. DIM .. "from guide sites of the beta, not seen in game|r" })
+    for _, o in ipairs(NS.writOptions()) do
+      add({ left = "   " .. o.label, right = o.text(), writOpt = o.key,
+        action = function(button) o.set(o.get() + (button == "RightButton" and -1 or 1) * (o.step or 1)) end,
+        tip = { o.tip, o.hint } })
+    end
+  end
 
   add({ left = "" })
   add({ left = GOLD .. "Read from the game|r" })
@@ -732,15 +742,24 @@ local function buildPage(page)
   -- 3b. Waylaid crates (LedgerCrates.lua): the Performance Bonus rank and the Favor of an Artisan crate
   if NS.crateOptions then
     local opts = NS.crateOptions()
-    local cc = card("crates", "Waylaid crates", #opts * LINE + 2)
-    form.crate = {}
+    local wopts = NS.writOptions and NS.writOptions() or {}   -- Craftsman's Writs: the same card, under the crates' lines
+    local cc = card("crates", "Waylaid crates", (#opts + #wopts) * LINE + 2)
+    form.crate, form.writ = {}, {}
     y = 0
-    for _, o in ipairs(opts) do
+    for i, o in ipairs(opts) do
       label(cc.content, o.label, 4, y - 4, 220)
       local st = keep(UI.stepper(cc.content, { min = o.min, max = o.max, step = 1, w = o.w or 36, tip = { o.label, o.tip } }, o.get, o.set))
       st:SetPoint("TOPLEFT", 230, y)
       label(cc.content, o.hint, 336, y - 4, 350, "dim")
       form.crate[o.key] = st
+      y = y - LINE
+    end
+    for _, o in ipairs(wopts) do
+      label(cc.content, o.label, 4, y - 4, 220)
+      local st = keep(UI.stepper(cc.content, { min = o.min, max = o.max, step = o.step or 1, w = o.w or 36, tip = { o.label, o.tip } }, o.get, o.set))
+      st:SetPoint("TOPLEFT", 230, y)
+      label(cc.content, o.hint, 346, y - 4, 340, "dim")
+      form.writ[o.key] = st
       y = y - LINE
     end
   end

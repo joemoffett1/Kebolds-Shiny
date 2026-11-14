@@ -14,7 +14,7 @@
 --   /kebold sales           what the crafts sell for: best of AH and vendor > vendor only > not counted
 --                           (also /kebold sales best | vendor | off)
 --   /kebold fast | cheap    fewest casts, or lowest cost (default)
---   /kebold tab level       open on a page: level, craft, shopping, prices, sales, settings (the old names route,
+--   /kebold tab level       open on a page: level, craft, favor (or crates / writs), shopping, prices, sales, settings (the old names route,
 --                           recipes and scan still work; /kebold page ... is the same)
 --   /kebold print           the same lines in chat, in case the window misbehaves
 --   /kebold strip pane      the selected recipe's figures inside the profession window's recipe pane; strip top = in a
@@ -1954,7 +1954,7 @@ local function createFrame()
   f.notice:SetPoint("TOPRIGHT", f, "TOPRIGHT", -12, -29)
 
   -- the rail of pages
-  f.nav = UI.nav(f, WIN.rail, function(key) NS.showPage(key) end)
+  f.nav = UI.nav(f, WIN.rail, function(key) NS.showPage(key, true) end)
   f.nav:SetPoint("TOPLEFT", f, "TOPLEFT", 6, -(WIN.top + 4))
   for _, key in ipairs(TAB_ORDER) do
     local p = pages[key]
@@ -2040,10 +2040,15 @@ local function toggle(show)
   end
 end
 
--- Opens the window on one page (a key, or one of the names /kebold tab takes).
-function NS.showPage(name)
+-- Opens the window on one page (a key, or one of the names /kebold tab takes). asIs: a page with views of its own
+-- stays on the view it last showed (the rail and the entry menu, which name the page, not a view).
+function NS.showPage(name, asIs)
   local key = PAGE_ALIAS[name] or name
   if pages[key] then settings().tab = key end
+  -- a page with views of its own (Merchant's Favor: crates, writs) opens on the one that was named
+  if not asIs and type(NS.PAGE_VIEW) == "table" and NS.PAGE_VIEW[name] and type(NS.favorView) == "function" then
+    settings().favorView = NS.PAGE_VIEW[name] ~= "crates" and NS.PAGE_VIEW[name] or nil
+  end
   toggle(true)
 end
 NS.showTab = NS.showPage
@@ -2131,6 +2136,11 @@ function NS.scanList(cmd)
     if #ids == 0 then return false, "The crate data is not loaded." end
     return ids, "crate materials: everything a Waylaid Crate can be filled with, and the crates themselves"
   end
+  if cmd == "writs" or cmd == "writ" then
+    local ids = type(NS.writScanIDs) == "function" and NS.writScanIDs() or {}
+    if #ids == 0 then return false, "The writ data is not loaded." end
+    return ids, "writ items: the Craftsman's Writs and their envelopes, what they ask for and the materials to make it"
+  end
   if cmd == "everything" then
     local ids, n = E.allItems(data())
     return ids, "every item of all nine professions", n
@@ -2179,7 +2189,7 @@ end
 
 -- For the scanner's quick scans (KeboldsShiny.lua): every item id Kebold knows, in the order of
 -- /keboldscan everything plus the disenchant materials, what the Waylaid Crates take and the crates themselves,
--- and the set of crafted gear among them.
+-- the Craftsman's Writs and their envelopes, and the set of crafted gear among them.
 local quickIds, quickGear
 function KeboldsShiny_QuickItems()
   if not quickIds then
@@ -2194,7 +2204,7 @@ function KeboldsShiny_QuickItems()
     ids[i] = id
     seen[id] = true
   end
-  for _, fn in ipairs({ NS.deScanIDs or false, NS.crateScanIDs or false }) do
+  for _, fn in ipairs({ NS.deScanIDs or false, NS.crateScanIDs or false, NS.writScanIDs or false }) do
     if type(fn) == "function" then
       local ok, more = pcall(fn)
       for _, id in ipairs(ok and type(more) == "table" and more or {}) do
@@ -2308,6 +2318,9 @@ SlashCmdList["KEBOLDSSHINY"] = function(msg)
     S.fast = cmd == "fast"
   elseif (which == "tab" or which == "page") and NS.pageOf(value) then
     S.tab = NS.pageOf(value).key
+    if type(NS.PAGE_VIEW) == "table" and NS.PAGE_VIEW[value] then   -- /kebold tab writs: the page on that view
+      S.favorView = NS.PAGE_VIEW[value] ~= "crates" and NS.PAGE_VIEW[value] or nil
+    end
     NS.resetScroll()
   elseif cmd == "ui" then
     UI.report()
@@ -2336,7 +2349,7 @@ SlashCmdList["KEBOLDSSHINY"] = function(msg)
     NS.printRows(list, 80)
     return
   else
-    say("Usage: /kebold (or /ledger) [bs | lw | tailoring | eng | alch | ench | cook | firstaid | mining | from <skill or auto> | to <skill or auto> | mine | recipes | trainer | buyable | all | sales [best | vendor | off] | fast | cheap | tab level | tab craft | tab disenchant | tab shopping | tab prices | tab sales | tab settings | print | copy | strip pane | strip top | strip off | skin plain | skin auto | ui | ui gallery]")
+    say("Usage: /kebold (or /ledger) [bs | lw | tailoring | eng | alch | ench | cook | firstaid | mining | from <skill or auto> | to <skill or auto> | mine | recipes | trainer | buyable | all | sales [best | vendor | off] | fast | cheap | tab level | tab craft | tab disenchant | tab favor | tab crates | tab writs | tab shopping | tab prices | tab sales | tab settings | print | copy | strip pane | strip top | strip off | skin plain | skin auto | ui | ui gallery]")
     return
   end
   toggle(true)

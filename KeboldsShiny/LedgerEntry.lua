@@ -49,6 +49,7 @@ end
 -- /keboldscan's help all read it (NS.scanName, NS.scanLabel, NS.scanPresets); nothing else names a scan.
 local SCAN_NAME = { plan = "This plan", route = "This route", whole = "Whole profession", mats = "Materials and parts",
   all = "Everything", fav = "Favourites", shop = "Shopping list", de = "Disenchant materials", crates = "Crate materials",
+  writs = "Writ items",
   quick = "Quick scan", gear = "Gear (quick)" }
 NS.SCAN_NAME = SCAN_NAME
 -- names that are already what a button says ("Scan quick scan" would not do)
@@ -210,7 +211,7 @@ function NS.entryMenu()
     func = function() settings().ahFollow = (settings().ahFollow == false) and true or false end }
   items[#items + 1] = { divider = true }
   for _, name in ipairs(NS.TAB_ORDER) do
-    items[#items + 1] = { text = NS.TAB_LABEL[name], func = function() NS.showTab(name) end }
+    items[#items + 1] = { text = NS.TAB_LABEL[name], func = function() NS.showTab(name, true) end }
   end
   return items
 end

@@ -469,7 +469,7 @@ end
 -- Fields: .cScan .cLast .cProfs .cSells (cards), .dProf .planText, .presets[i] (.row .info), .stop .bar .barNote
 --         .status, .follow .open (opts.ah), .summary .label .find .tLast, .tProfs .tSells
 -- Every size below is a guess (nothing here has been seen in game).
-local PV = { left = 260, gap = 6, rowH = 24, button = 126, top = 28, statusH = 40, headH = 32 }
+local PV = { left = 260, gap = 6, rowH = 24, button = 126, top = 28, statusH = 38, headH = 32 }
 NS.PRICES = PV
 
 local LAST_COLUMNS = {

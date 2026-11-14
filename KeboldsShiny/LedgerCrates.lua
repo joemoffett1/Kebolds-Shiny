@@ -530,6 +530,7 @@ local function pickMenu(e)
   radio("have", "Have it", nil, "You have them already (farmed or banked): they cost nothing.")
   return items
 end
+NS.cratePickMenu = pickMenu   -- the Writs view offers the same choices for the item a writ wants
 
 function NS.crateRows()
   local st = store()
@@ -863,8 +864,9 @@ if type(NS.itemFacts) == "function" and not NS.crateFactsHooked then
   end
 end
 
--- ---- the Crates page -------------------------------------------------------------------------------------------------
--- Registered under "crates", between Disenchant and Shopping. One row of controls (Tier, Only crates I hold, Only
+-- ---- the Crates view -------------------------------------------------------------------------------------------------
+-- A view of the Merchant's Favor page (registered under "crates", between Disenchant and Shopping; the page itself
+-- is at the end of this file). One row of controls (Tier, Only crates I hold, Only
 -- priced, Find, Crates stepper, Scan crate materials, Quick scan), the list, and the pane of the selected crate
 -- in the split's right side. Sizes (all guesses until seen in game):
 local CR = {
@@ -977,13 +979,155 @@ local function buildPane(host)
   return p
 end
 
-page = NS.page({ key = "crates", title = "Crates", order = 2.75, icon = ICON,
+-- ---- the Merchant's Favor page ---------------------------------------------------------------------------------------
+-- The rail page (key "crates", so saved state and /kebold tab crates keep working) has two views, chosen with the
+-- two buttons at the left of its bar and saved as S.favorView: "crates" (everything above) and "writs"
+-- (LedgerWrits.lua, which adds itself to NS.favorViews). A view is
+--   { key, title, columns, rows = function() -> rows, title, footer = function() -> text, onSort(key, index),
+--     selected(row), build(pg, at, bar) -> its bar's widgets (made once, on the bar's second row),
+--     pane(pg, host) -> its pane frame (with :Layout(w, h)), paint(pg, paneShown), tip }
+-- A row with `caption = true` is the sentence beside the two buttons, not a line of the list.
+NS.favorViews = NS.favorViews or {}
+local VIEW_ORDER = { "crates", "writs" }
+NS.FAVOR_VIEWS = VIEW_ORDER
+
+local function viewKey()
+  local v = settings().favorView
+  if v ~= "crates" and type(v) == "string" and type(NS.favorViews[v]) == "table" then return v end
+  return "crates"
+end
+local function viewNow() return NS.favorViews[viewKey()] end
+
+-- NS.favorView() -> "crates" | "writs"; NS.favorView("writs") switches (an unknown view is the Crates view).
+function NS.favorView(v)
+  if v == nil then return viewKey() end
+  local S = settings()
+  local want = (v ~= "crates" and type(NS.favorViews[v]) == "table") and v or nil
+  if S.favorView ~= want then
+    S.favorView = want
+    if NS.resetScroll then NS.resetScroll() end
+  end
+  if NS.refresh then NS.refresh() end
+  return viewKey()
+end
+
+-- The Crates view's controls, on the bar's second row. Returns them, so the page can hide them on the other view.
+local function buildCrateBar(pg, at0, bar)
+  local made = {}
+  local at = { put = function(w, ...)
+    made[#made + 1] = w
+    return at0.put(w, ...)
+  end, label = function(...)
+    local fs = at0.label(...)
+    made[#made + 1] = fs
+    return fs
+  end }
+  pg.dTier = at.put(UI.dropdown(bar, CR.tierW, function()
+    local t = store().tier
+    return t and C.tiers[t].name or "All tiers"
+  end, function()
+    local now_ = store().tier
+    local items = { { title = true, text = "Tier" } }
+    items[#items + 1] = { radio = true, checked = now_ == nil, text = "All tiers", func = function()
+      store().tier = nil
+      NS.resetScroll()
+      NS.refresh()
+    end }
+    for i, t in ipairs(C.tiers) do
+      items[#items + 1] = { radio = true, checked = now_ == i, text = t.name, tip = "Needs level " .. t.level .. ".", func = function()
+        store().tier = i
+        NS.resetScroll()
+        NS.refresh()
+      end }
+    end
+    return items
+  end, { "Tier", "All 30 crates, or the ones of one tier." }))
+  pg.cHeld = at.put(UI.check(bar, "Only crates I hold", function() return store().held and true or false end, function(v)
+    store().held = v and true or nil
+    NS.resetScroll()
+    NS.refresh()
+  end, { "Only crates I hold", "Only the crates in your bags and bank." }), 4, CR.heldW)
+  pg.cPriced = at.put(UI.check(bar, "Only priced", function() return store().priced and true or false end, function(v)
+    store().priced = v and true or nil
+    NS.resetScroll()
+    NS.refresh()
+  end, { "Only priced", "Hides crates without a per point figure: no option has a price, or the crate's Favor is not known." }), 4, CR.pricedW)
+  pg.eFind = at.put(UI.search(bar, CR.findW, function(self)
+    local t = self:GetText() or ""
+    if t ~= search then
+      search = t
+      NS.resetScroll()
+      NS.refresh()
+    end
+  end), 6)
+  pg.eFind:SetMaxLetters(30)
+  pg.lCount = at.label("Crates", CR.nLabelW)
+  pg.sCount = at.put(UI.stepper(bar, { min = 1, max = MAX_N, step = 1, w = CR.nBoxW,
+    tip = { "Crates", "How many of EACH crate are priced. Cost to fill, Total cost and Fill only are then of all of them, so the per point figure shows the prices moving as the cheap listings run out." } },
+    function() return countN() end, function(v) NS.setCrateOpt("n", v) end), 4)
+  local label = NS.scanLabel and NS.scanLabel("crates") or "Scan crate materials"
+  pg.bScan = at.put(NS.scanControl(UI.button(bar, label, CR.scanW, function() NS.scanButton("crates") end,
+    { label, SCAN_TIP, "It only looks prices up: nothing is bought." })), 4)
+  if type(KeboldsShinyScan_HasQuick) == "function" then
+    local quick = NS.scanLabel("quick")
+    pg.bQuick = at.put(NS.scanControl(UI.button(bar, quick, CR.quickW, function() NS.scanButton("quick") end,
+      { quick, "The whole auction house in one request: the crates and what they take, among everything else Kebold knows.",
+        "The game allows it once per 15 minutes; when the server does not answer it reads gear only.", "It only looks prices up: nothing is bought." }),
+      NS.quickWhy), 4)
+  end
+  return made
+end
+
+NS.favorViews.crates = { key = "crates", title = "Crates", columns = COLUMNS,
   tip = { "Crates", "Waylaid Crates: what each costs to fill, the Merchant's Favor it gives, and so which crate and which filling is the cheapest way to points." },
-  bars = 1, detail = true, columns = COLUMNS, marks = { "~", "*", "?" },
-  empty = { icon = ICON, title = "No crates", text = "No crate matches." },
   rows = function() return NS.crateRows() end,
-  onSort = function(_, key, k) NS.crateSortBy(SORT[key] and key or k) end,
+  footer = function() return lastStatus end,
+  onSort = function(key, k) NS.crateSortBy(SORT[key] and key or k) end,
   selected = function(row) return row.crate ~= nil and row.crate == selID end,
+  build = buildCrateBar,
+  pane = function(pg, host)
+    pg.pane = buildPane(host)
+    return pg.pane
+  end,
+  paint = function(pg, paneShown)
+    local st = store()
+    pg.dTier:Refresh()
+    pg.cHeld:Refresh()
+    pg.cPriced:Refresh()
+    pg.sCount:Refresh()
+    pg.table:SetSort(sortKey(), st.desc == true)
+    if paneShown then
+      local c = selID and byId[selID] or nil
+      pg.pane:Fill(c and NS.crateDetail(c.id) or {}, c)
+    end
+  end }
+
+local FV = { segW = 62 }   -- the two view buttons (a guess until seen in game)
+NS.FV = FV
+
+page = NS.page({ key = "crates", title = "Merchant's Favor", order = 2.75, icon = ICON,
+  tip = { "Merchant's Favor", "Waylaid Crates: what a point of Merchant's Favor costs. Craftsman's Writs: what a point of reputation costs." },
+  bars = 2, detail = true, columns = COLUMNS, marks = { "~", "*", "?" },
+  empty = { icon = ICON, title = "Nothing to show", text = "Nothing matches." },
+  rows = function() return viewNow().rows() end,
+  -- the view's own columns; its caption row is the sentence beside the two buttons, not a line of the list
+  view = function(pg, rows)
+    local v = viewNow()
+    if pg.table.columns ~= v.columns then pg.table:SetColumns(v.columns) end
+    local out = {}
+    pg.captionText, pg.captionTip = "", false
+    for _, row in ipairs(rows) do
+      if row.caption == true then
+        pg.captionText = row.left or ""
+        pg.captionTip = row.tip or false
+      else
+        out[#out + 1] = row
+      end
+    end
+    return out
+  end,
+  onSort = function(_, key, k) viewNow().onSort(key, k) end,
+  selected = function(row) return viewNow().selected(row) end,
   -- the split's right side is this page's own pane; a recipe's or an item's own details open on their own pages
   detailMine = function() return true end,
   onDetail = function(_, kind, id)
@@ -996,85 +1140,70 @@ page = NS.page({ key = "crates", title = "Crates", order = 2.75, icon = ICON,
       S.tab = "sales"
     end
   end,
-  footer = function() return lastStatus end,
+  footer = function() return viewNow().footer() end,
   build = function(pg)
     local at, bar = pg.at, pg.bar
-    pg.dTier = at.put(UI.dropdown(bar, CR.tierW, function()
-      local t = store().tier
-      return t and C.tiers[t].name or "All tiers"
-    end, function()
-      local now_ = store().tier
-      local items = { { title = true, text = "Tier" } }
-      items[#items + 1] = { radio = true, checked = now_ == nil, text = "All tiers", func = function()
-        store().tier = nil
-        NS.resetScroll()
-        NS.refresh()
-      end }
-      for i, t in ipairs(C.tiers) do
-        items[#items + 1] = { radio = true, checked = now_ == i, text = t.name, tip = "Needs level " .. t.level .. ".", func = function()
-          store().tier = i
-          NS.resetScroll()
-          NS.refresh()
-        end }
+    -- first row: the two views, the one showing in gold, and the view's own sentence beside them
+    pg.seg, pg.viewWidgets, pg.panes, pg.viewAt = {}, {}, {}, {}
+    for _, key in ipairs(VIEW_ORDER) do
+      local v = NS.favorViews[key]
+      if type(v) == "table" then
+        pg.seg[key] = at.put(UI.button(bar, v.title, FV.segW, function() NS.favorView(key) end, v.tip), 2)
       end
-      return items
-    end, { "Tier", "All 30 crates, or the ones of one tier." }))
-    pg.cHeld = at.put(UI.check(bar, "Only crates I hold", function() return store().held and true or false end, function(v)
-      store().held = v and true or nil
-      NS.resetScroll()
-      NS.refresh()
-    end, { "Only crates I hold", "Only the crates in your bags and bank." }), 4, CR.heldW)
-    pg.cPriced = at.put(UI.check(bar, "Only priced", function() return store().priced and true or false end, function(v)
-      store().priced = v and true or nil
-      NS.resetScroll()
-      NS.refresh()
-    end, { "Only priced", "Hides crates without a per point figure: no option has a price, or the crate's Favor is not known." }), 4, CR.pricedW)
-    pg.eFind = at.put(UI.search(bar, CR.findW, function(self)
-      local t = self:GetText() or ""
-      if t ~= search then
-        search = t
-        NS.resetScroll()
-        NS.refresh()
-      end
-    end), 6)
-    pg.eFind:SetMaxLetters(30)
-    pg.lCount = at.label("Crates", CR.nLabelW)
-    pg.sCount = at.put(UI.stepper(bar, { min = 1, max = MAX_N, step = 1, w = CR.nBoxW,
-      tip = { "Crates", "How many of EACH crate are priced. Cost to fill, Total cost and Fill only are then of all of them, so the per point figure shows the prices moving as the cheap listings run out." } },
-      function() return countN() end, function(v) NS.setCrateOpt("n", v) end), 4)
-    local label = NS.scanLabel and NS.scanLabel("crates") or "Scan crate materials"
-    pg.bScan = at.put(NS.scanControl(UI.button(bar, label, CR.scanW, function() NS.scanButton("crates") end,
-      { label, SCAN_TIP, "It only looks prices up: nothing is bought." })), 4)
-    if type(KeboldsShinyScan_HasQuick) == "function" then
-      local quick = NS.scanLabel("quick")
-      pg.bQuick = at.put(NS.scanControl(UI.button(bar, quick, CR.quickW, function() NS.scanButton("quick") end,
-        { quick, "The whole auction house in one request: the crates and what they take, among everything else Kebold knows.",
-          "The game allows it once per 15 minutes; when the server does not answer it reads gear only.", "It only looks prices up: nothing is bought." }),
-        NS.quickWhy), 4)
     end
-    pg.pane = buildPane(pg.split.right)
+    pg.captionX, pg.captionText, pg.captionTip = at.x + 10, "", false
+    pg.caption = UI.text(bar, "dim")
+    pg.caption:SetPoint("TOPLEFT", bar, "TOPLEFT", pg.captionX, -7)
+    pg.caption:SetJustifyH("LEFT")
+    pg.caption:SetWordWrap(false)
+    -- second row: each view's own controls, in the same place; only the showing view's are shown
+    for _, key in ipairs(VIEW_ORDER) do
+      local v = NS.favorViews[key]
+      if type(v) == "table" then
+        local vat = key == "crates" and at or NS.placer(bar)
+        vat.row(2)
+        pg.viewWidgets[key] = v.build(pg, vat, bar) or {}
+        pg.viewAt[key] = vat
+        pg.panes[key] = v.pane(pg, pg.split.right)
+      end
+    end
   end,
-  layout = function(pg)
+  layout = function(pg, w)
     local s = pg.split
-    if type(pg.pane) == "table" and type(s) == "table" and s.rightW > 0 then pg.pane:Layout(s.rightW, s.h) end
+    if type(pg.caption) == "table" then pg.caption:SetWidth(max(100, w - pg.captionX - 4)) end
+    if type(s) == "table" and s.rightW > 0 and type(pg.panes) == "table" then
+      for _, p in pairs(pg.panes) do p:Layout(s.rightW, s.h) end
+    end
   end,
   paint = function(pg)
-    local st = store()
-    pg.dTier:Refresh()
-    pg.cHeld:Refresh()
-    pg.cPriced:Refresh()
-    pg.sCount:Refresh()
-    pg.table:SetSort(sortKey(), st.desc == true)
-    local s = pg.split
-    if type(s) == "table" and s.rightW > 0 then
-      local c = selID and byId[selID] or nil
-      pg.pane:Layout(s.rightW, s.h)
-      pg.pane:Fill(c and NS.crateDetail(c.id) or {}, c)
-      pg.pane:Show()
-    else
-      pg.pane:Hide()
+    local now = viewKey()
+    for key, b in pairs(pg.seg) do
+      b.selected = key == now
+      b.label:SetText((key == now and GOLD or DIM) .. NS.favorViews[key].title .. "|r")
     end
+    for key, list in pairs(pg.viewWidgets) do
+      for _, w in ipairs(list) do
+        if key == now then w:Show() else w:Hide() end
+      end
+    end
+    pg.caption:SetText(UI.show(pg.captionText or ""))
+    local s = pg.split
+    local open = type(s) == "table" and s.rightW > 0
+    for key, p in pairs(pg.panes) do
+      if open and key == now then
+        p:Layout(s.rightW, s.h)
+        p:Show()
+      else
+        p:Hide()
+      end
+    end
+    NS.favorViews[now].paint(pg, open)
   end })
-if type(NS.PAGE_ALIAS) == "table" then NS.PAGE_ALIAS.crate = "crates" end
+if type(NS.PAGE_ALIAS) == "table" then
+  for _, word in ipairs({ "crate", "favor", "favour", "writs", "writ" }) do NS.PAGE_ALIAS[word] = "crates" end
+end
+-- /kebold tab crates and /kebold tab writs open the page on that view; /kebold tab favor as it was last shown
+NS.PAGE_VIEW = NS.PAGE_VIEW or {}
+NS.PAGE_VIEW.crates, NS.PAGE_VIEW.crate, NS.PAGE_VIEW.writs, NS.PAGE_VIEW.writ = "crates", "crates", "writs", "writs"
 
 function NS.cratePane() return page.pane end   -- for tests
