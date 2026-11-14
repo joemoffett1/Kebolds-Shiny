@@ -184,7 +184,7 @@ local function finish(reason)
     say((#s.ids - s.done) .. " items were not reached and keep their earlier prices. Run the scan again for a full set; it starts from the beginning.")
   end
   if s.done > 0 then
-    say("Kebold uses the new prices at once. For the web page, /reload (or logging out) writes them to the saved file.")
+    say("Kebold uses the new prices at once.")
   end
   -- the Kebold window re-plans from the new prices
   if type(KeboldsShiny_OnScanFinished) == "function" then pcall(KeboldsShiny_OnScanFinished, s.done, #s.ids) end
@@ -921,7 +921,7 @@ local function qfinish(reason)
   say(string.format("%s: %d of %d items saved - %d with listings, %d without, %.1f seconds.", reason, q.done, #q.ids, q.found, q.empty, GetTime() - q.started))
   if text then say(text) end
   if q.done > 0 then
-    say("Kebold uses the new prices at once. For the web page, /reload (or logging out) writes them to the saved file.")
+    say("Kebold uses the new prices at once.")
   end
   if type(KeboldsShiny_OnScanFinished) == "function" then pcall(KeboldsShiny_OnScanFinished, q.done, #q.ids) end
 end
