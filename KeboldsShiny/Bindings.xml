@@ -1,0 +1,5 @@
+<Bindings>
+  <Binding name="KEBOLDSSHINY_TOGGLE" header="KEBOLDSSHINY" category="ADDONS">
+    KeboldsShiny_Toggle()
+  </Binding>
+</Bindings>
