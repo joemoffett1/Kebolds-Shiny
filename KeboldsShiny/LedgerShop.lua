@@ -102,7 +102,12 @@ local function store()
   if type(sh.done) ~= "table" then sh.done = {} end
   for i = #sh.entries, 1, -1 do   -- a saved file edited by hand, or an older shape: drop what cannot be read
     local e = sh.entries[i]
-    if type(e) ~= "table" or type(e.kind) ~= "string" then table.remove(sh.entries, i) end
+    if type(e) ~= "table" or type(e.kind) ~= "string" then
+      table.remove(sh.entries, i)
+    elseif e.kind == "route" then   -- its range is compared and planned with: numbers, or the entry cannot be read
+      e.from, e.to = tonumber(e.from), tonumber(e.to)
+      if not (e.from and e.to) or type(e.prof) ~= "string" then table.remove(sh.entries, i) end
+    end
   end
   return sh
 end
@@ -150,7 +155,9 @@ function NS.shopAdd(e)
     end
     -- stock = true: a route step of parts made ahead for later steps (see build)
     list[#list + 1] = { kind = e.kind, prof = r.prof, id = r.id, n = n, from = e.kind == "step" and from or nil, to = e.kind == "step" and to or nil,
-      stock = (e.kind == "step" and e.stock) and true or nil }
+      stock = (e.kind == "step" and e.stock) and true or nil,
+      -- plan = the profession whose "Add route to shopping" put the step here (NS.addPlanToShopping replaces those)
+      plan = (e.kind == "step" and type(e.plan) == "string") and e.plan or nil }
   elseif e.kind == "route" then
     local c = NS.state(e.prof)
     if not c then return nil, "no profession to plan" end
@@ -1009,7 +1016,7 @@ local function dress(t)
         find = UI.button(b, "Search", 50, function()
           local r = rawget(b, "row")
           if r and r.item then NS.searchAH(r.item) end
-        end, { "Search", "Shows this item's listings on the auction house's Buy page. Nothing is bought." })
+        end, { "Search", "Shows this item's listings on the auction house's Buy page. Nothing is bought." }, true)   -- in its own column: exactly 50
         b.shopFind = find
       end
       pcall(find.SetHeight, find, min(t.rowH - 2, UI.density().ctl))
@@ -1104,7 +1111,9 @@ local function place(page)
   if not (w and h and type(t) == "table") then return end
   local wants = page.wants or {}
   local n = #wants
-  page.summary:SetWidth(max(60, w - 8 - (SHOP.scanW + SHOP.favW + SHOP.clearW + 8 + 8)))
+  -- the sentence ends before the two buttons at the bar's right end (the flow has just placed them)
+  local first = page.at.flow:Where(page.bFav)
+  page.summary:SetWidth(max(60, (first and first.x or w) - 12))
   t:ClearAllPoints()
   if n == 0 then   -- nothing on the list: the table's empty state has the whole page
     page.wantsBox:Hide()
@@ -1160,7 +1169,7 @@ NS.page({ key = "shop", title = "Shopping", order = 3, icon = "Interface\\Icons\
     page.summary:SetPoint("TOPLEFT", page.bar, "TOPLEFT", 4, -7)
     page.summary:SetJustifyH("LEFT")
     page.summary:SetWordWrap(false)
-    page.bClear = UI.button(page.bar, "Clear list", SHOP.clearW, function()
+    page.bClear = UI.button(page.bar, "Really clear?", SHOP.clearW, function()   -- made with its longest label, so it is wide enough for both
       if page.clearArmed ~= true then   -- asked once more before anything is thrown away
         page.clearArmed = true
         page.bClear:SetLabel("Really clear?")
@@ -1176,7 +1185,8 @@ NS.page({ key = "shop", title = "Shopping", order = 3, icon = "Interface\\Icons\
       page.bClear:SetLabel("Clear list")
       NS.shopClear()
     end, { "Clear list", "Empties the shopping list and its ticks. Click twice: the second click within a few seconds clears it." })
-    page.bClear:SetPoint("TOPRIGHT", page.bar, "TOPRIGHT", -2, -2)
+    page.bClear.fitLock = true   -- stays as wide as its longest label
+    page.bClear:SetLabel("Clear list")
     page.bFav = UI.button(page.bar, "Add favourites", SHOP.favW, function()
       for _, e in ipairs(NS.shopEntries()) do
         if e.kind == "favs" then
@@ -1187,11 +1197,14 @@ NS.page({ key = "shop", title = "Shopping", order = 3, icon = "Interface\\Icons\
       local ok, err = NS.shopAdd({ kind = "favs", n = 1 })
       if not ok then NS.notice("Not added: " .. tostring(err) .. ".") end
     end, { "Add favourites", "Adds one craft of every favourite recipe as one entry that follows your favourites. Its quantity can be typed." })
-    page.bFav:SetPoint("RIGHT", page.bClear, "LEFT", -4, 0)
-    page.bScan = NS.scanControl(UI.button(page.bar, "Scan shopping list", SHOP.scanW, function()
+    -- the row: the sentence at the left, the list's two actions at the right end
+    page.at.right(page.bFav, 6)
+    page.at.right(page.bClear, 0)
+    -- the footer's right side: the list's scan, by its one name (LedgerEntry.lua)
+    local scanName = NS.scanLabel and NS.scanLabel("shop") or "Scan shopping list"
+    page.bScan = NS.footButton(page, { label = scanName, onClick = function()
       NS.scanButton("shop")
-    end, { "Scan shopping list", "Reads fresh prices for what the list buys, the parts it makes and what those use. It only looks: nothing is bought." }))
-    page.bScan:SetPoint("RIGHT", page.bFav, "LEFT", -4, 0)
+    end, tip = { scanName, "Reads fresh prices for what the list buys, the parts it makes and what those use. It only looks: nothing is bought." } })
     -- what you are shopping for
     page.wantsBox = CreateFrame("Frame", nil, fr)
     page.wantsTitle = UI.text(page.wantsBox, "section", "Shopping for")

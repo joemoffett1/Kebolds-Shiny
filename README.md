@@ -3,12 +3,18 @@
 An addon for WoW Forever: leveling routes and crafting profit from live auction house prices, inside the
 game. It reads and plans; it never crafts, buys, posts, cancels or learns anything, and it needs no other addon.
 
-It has four parts:
+It has five parts:
 
 1. **The Kebold window** (`/kebold`): eight pages on a rail at the left.
 2. **A Kebold tab inside the auction house**: the scans and what the last one found.
 3. **A block inside the profession window**: the selected recipe's figures.
-4. **Collectors that run by themselves**: what the game shows about recipes, trainers, vendors, vendor values,
+4. **A buy helper on the auction house's buy screen**: open a material's listings and the price list shows each
+   price step in green, yellow or red by what a recipe's crafts would earn an hour at that price (green: at
+   least the number you set, 10 g an hour to start; yellow: a profit below it; red: none) with the profit an hour
+   beside it. Under the Buy button: the recipe it is judged for (its menu also sets the number), the profit for
+   the quantity you type and how many to buy. It only reads: you type the quantity and press Buy yourself.
+   `/keboldah buy off` hides it all.
+5. **Collectors that run by themselves**: what the game shows about recipes, trainers, vendors, vendor values,
    Legacy talents and your own auctions.
 
 Nothing has a price until it was scanned: open the auction house and run a scan first.
@@ -37,10 +43,10 @@ What to expect on your own character:
 
 | page | what it is for |
 |---|---|
-| **Level** | The cheapest or the fastest route from one skill to another for any of the nine professions, yours or not. A strip of six figures (points covered, crafts, casting, materials, to learn, after sales), the steps as a table, and beside it the selected step: what to learn first and where, what to buy and what to pay up to, its choices. "Whole route" shows everything the route buys, the parts (buy or make), where each product sells, and the recipes to learn. The window's footer on this page says what is wrong with the plan (prices missing, a skill range with no usable recipe and why) beside the scans. |
+| **Level** | A route from one skill to another for any of the nine professions, yours or not. **Start this plan** freezes it: after that nothing changes it (not prices, scans or skill-ups) until you press Plan again; your skill only marks progress. **Route settings** sets what your time is worth, the most to pay for one skill point and whether to buy for bad luck. The selected step lists other recipes for its range with **Use instead**, and for a craft that does not always give a point, the count that covers bad luck 9 times in 10. A strip of six figures (points covered, crafts, casting, materials, to learn, after sales), the steps as a table, and beside it the selected step: what to learn first and where, what to buy and what to pay up to, its choices. "Whole route" shows everything the route buys, the parts (buy or make), where each product sells, and the recipes to learn. The window's footer on this page says what is wrong with the plan (prices missing, a skill range with no usable recipe and why) beside the scans. |
 | **Craft** | Every recipe of the profession: learn level, source, chance of a point, cost, what it sells for, profit, profit per hour, how many are worth making and the total. A click opens the recipe's details: materials, the three ways of getting its parts, the price steps, a buy list for any number of crafts, and "Add to list". |
 | **Disenchant** | Every piece of gear the nine professions make that can be disenchanted: what it disenchants into, what that is worth, the craft's materials, profit and profit per hour, against what a vendor and the auction house pay. A click shows every outcome with its chance. The outcome table is the original game's (marked `~`, not confirmed for Forever) until 20 of your own disenchants of a band are logged. Kebold never disenchants anything itself. |
-| **Merchant's Favor** | Two tabs. **Crates**: Waylaid Crates: for each of the 30, the Merchant's Favor it gives, the silver it pays back, the cheapest thing to fill it with and what that costs, the crate's own auction price, what one point of Favor costs, and the total with and without buying the crate. A click shows every option (bought or made), the reward and where to hand it in. Everything about the crates is from guide sites of the beta, not seen in game: Expert Favor is an estimate (`~`), Artisan Favor is not known (`?`) until typed on the Settings page. Kebold never fills or hands in a crate. **Writs**: the 150 Craftsman's Writs: the item each wants, its rank and reputation (75 / 125 / 200), what the item costs bought or made, the writ's own auction price and what one point of reputation costs, with the Forged Delivery Receipt in the same list. A line above the list says how far the next standing is and what the cheapest way there costs. Reputation figures are from guide sites, not seen in game; the Coin Pouch's silver is not known and counts as nothing. |
+| **Merchant's Favor** | Two tabs. **Crates**: Waylaid Crates: for each of the 30, the Merchant's Favor it gives, the silver it pays back, the cheapest thing to fill it with and what that costs, the crate's own auction price, what one point of Favor costs, and the total with and without buying the crate. A click shows every option (bought or made), the reward and where to hand it in. The crates' figures are from guide sites of the beta; only the Artisan reward (20 / 40 Favor, 10s / 20s) was seen in game, and Expert Favor is an estimate (`~`). Kebold never fills or hands in a crate. **Writs**: the 150 Craftsman's Writs: the item each wants, its rank and reputation (75 / 125 / 200), what the item costs bought or made, the writ's own auction price and what one point of reputation costs, with the Forged Delivery Receipt in the same list. A line above the list says how far the next standing is and what the cheapest way there costs. Reputation figures are from guide sites, not seen in game; the Coin Pouch's silver is not known and counts as nothing. |
 | **Shopping** | One list of what to buy for the things you added (a route step, a whole route, crafts of a recipe, your favourites, plain items): your bags are taken off, every line says what price to pay up to, parts you make are opened into their materials, and lines can be ticked off. Parts made ahead for later steps are counted once. |
 | **Prices** | The scans (this plan, this route, whole profession, materials and parts, everything, disenchant materials, crate materials, favourites, shopping list), what the last scan found, how complete each profession's prices are, and vendor values the game reports differently from the shipped data. |
 | **My sales** | Your own auctions: posted, sold, expired and cancelled per item, recent events, and the price history of the scans. |
@@ -116,7 +122,7 @@ what making the item costs and earns, and what a recipe item teaches.
 | `/keboldshop` | the shopping list in chat; `add recipe <spell id> [n]`, `add item <item id> [n]`, `add route [profession]`, `add favs [n]`, `qty <line> <n>`, `remove <line>`, `clear`, `tick <item id>`, `untick <item id>` |
 | `/keboldde` | your logged disenchants: how many, per band whether the rates are measured yet, the cast time; `log` the last lines, `debug` what the watcher saw |
 | `/keboldsales` | your auctions in chat; `<part of a name>`, `log [lines]`, `auto on`, `auto off` |
-| `/keboldah` | shows or hides the auction house tab's page; `follow on`, `follow off`, and `level`, `strata`, `inset`, `reset`, `tabs` to tune where it sits |
+| `/keboldah` | shows or hides the auction house tab's page; `buy on`, `buy off`, `buy floor <n>`, `buy rowph off`, `buy rowx <n>`, `buy where side`, `buy probe` for the buy helper; `follow on`, `follow off`, and `level`, `strata`, `inset`, `reset`, `tabs` to tune where it sits |
 | `/keboldcollect` | what was collected; `legacy` reads the Legacy talents now; `off`, `on`; `chat on`, `chat off` = a chat line for every profession, trainer and vendor read (off unless you switch it on) |
 
 ## What it collects by itself

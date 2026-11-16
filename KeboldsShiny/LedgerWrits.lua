@@ -96,6 +96,8 @@ function NS.writRank(w) return W.ranks[w.rank] end
 local function store()
   local S = settings()
   if type(S.writs) ~= "table" then S.writs = {} end
+  -- a rank the data does not have (a saved file edited by hand, or an older one): no filter
+  if S.writs.rank ~= nil and type(W.ranks[S.writs.rank]) ~= "table" then S.writs.rank = nil end
   return S.writs
 end
 
@@ -672,7 +674,9 @@ local function receiptRow(f, s)
       ppText(f.total, f.est, f.noWrit or f.favorNoCrate),
       ppText(f.itemOnly, f.est, f.favorNoCrate),
     }, item = RECEIPT, writ = RECEIPT, receipt = true, tip = tip,
-    action = function() NS.writSelect(RECEIPT) end,
+    action = function(button)   -- a click on the open line closes the pane (NS.detailClick)
+      if not NS.detailClick(selID == RECEIPT, button) then NS.writSelect(RECEIPT) end
+    end,
     rep = f.rep1, itemCost = f.itemCost, writEach = f.crateCost, pp = f.pp, ppItem = f.ppItem, total = f.total, itemOnly = f.itemOnly,
     noWrit = f.noWrit, held = f.held, blocked = f.blocked, est = f.est }
 end
@@ -800,7 +804,9 @@ function NS.writRows()
           ppText(f.total, false, f.noWrit),
           ppText(f.itemOnly),
         }, item = w.item, writ = w.id, menu = true, shopMenu = pickMenuOf(f), tip = tip,
-        action = function() NS.writSelect(w.id) end,
+        action = function(button)
+          if not NS.detailClick(selID == w.id, button) then NS.writSelect(w.id) end
+        end,
         rank = w.rank, rep = R.rep, qty = w.qty, wantItem = w.item, how = f.how, itemCost = f.itemCost, writEach = f.writEach,
         pp = f.pp, ppItem = f.ppItem, total = f.total, itemOnly = f.itemOnly, noWrit = f.noWrit, held = f.held }
     end
@@ -1150,18 +1156,19 @@ local function buildPane(host)
   return p
 end
 
+-- The Writs view's row: its filters, then Find at the right end. `at` places and shows them only on this view.
 local function buildBar(pg, at, bar)
-  local made = {}
-  local function put(w, ...)
-    made[#made + 1] = w
-    return at.put(w, ...)
-  end
+  local put = at.put
   local function pickOne(key, value)
     store()[key] = value
     NS.resetScroll()
     NS.refresh()
   end
-  pg.dWritRank = put(UI.dropdown(bar, WR.rankW, function()
+  pg.dWritRank = put(UI.choice(bar, "Rank", function()
+    local list = { "All ranks" }
+    for _, r in ipairs(W.ranks) do list[#list + 1] = r.name end
+    return list
+  end, function()
     local r = store().rank
     return r and W.ranks[r].name or "All ranks"
   end, function()
@@ -1172,8 +1179,12 @@ local function buildBar(pg, at, bar)
       items[#items + 1] = { radio = true, checked = now == i, text = r.name, tip = r.rep .. " reputation a delivery.", func = function() pickOne("rank", i) end }
     end
     return items
-  end, { "Rank", "All 150 writs and the receipt, or the writs of one rank." }))
-  pg.dWritProf = put(UI.dropdown(bar, WR.profW, function()
+  end, { "Rank", "All 150 writs and the receipt, or the writs of one rank." }), 8)
+  pg.dWritProf = put(UI.choice(bar, "Profession", function()
+    local list = { "All professions" }
+    for _, p in ipairs(profList) do list[#list + 1] = p end
+    return list
+  end, function()
     return store().prof or "All professions"
   end, function()
     local now = store().prof
@@ -1183,14 +1194,14 @@ local function buildBar(pg, at, bar)
       items[#items + 1] = { radio = true, checked = now == p, text = p, func = function() pickOne("prof", p) end }
     end
     return items
-  end, { "Profession", "The writs whose item one profession makes. The item may still be bought." }))
+  end, { "Profession", "The writs whose item one profession makes. The item may still be bought." }), 8)
   pg.cWritHeld = put(UI.check(bar, "Only writs I hold", function() return store().held and true or false end, function(v)
     pickOne("held", v and true or nil)
-  end, { "Only writs I hold", "Only the opened writs (and receipts) in your bags and bank." }), 4, WR.heldW)
+  end, { "Only writs I hold", "Only the opened writs (and receipts) in your bags and bank." }), 8)
   pg.cWritPriced = put(UI.check(bar, "Only priced", function() return store().priced and true or false end, function(v)
     pickOne("priced", v and true or nil)
-  end, { "Only priced", "Hides writs without a per point figure: the item has no price." }), 4, WR.pricedW)
-  pg.eWritFind = put(UI.search(bar, WR.findW, function(self)
+  end, { "Only priced", "Hides writs without a per point figure: the item has no price." }), 8)
+  pg.eWritFind = at.right(UI.search(bar, WR.findW, function(self)
     local t = self:GetText() or ""
     if t ~= search then
       search = t
@@ -1199,17 +1210,11 @@ local function buildBar(pg, at, bar)
     end
   end), 6)
   pg.eWritFind:SetMaxLetters(30)
+  -- the footer's right side while this view shows: the writs' scan (Quick scan beside it is the page's)
   local label = NS.scanLabel and NS.scanLabel("writs") or "Scan writ items"
-  pg.bWritScan = put(NS.scanControl(UI.button(bar, label, WR.scanW, function() NS.scanButton("writs") end,
-    { label, SCAN_TIP, "It only looks prices up: nothing is bought." })), 4)
-  if type(KeboldsShinyScan_HasQuick) == "function" then
-    local quick = NS.scanLabel("quick")
-    pg.bWritQuick = put(NS.scanControl(UI.button(bar, quick, WR.quickW, function() NS.scanButton("quick") end,
-      { quick, "The whole auction house in one request: the writs and what they ask for, among everything else Kebold knows.",
-        "The game allows it once per 15 minutes; when the server does not answer it reads gear only.", "It only looks prices up: nothing is bought." }),
-      NS.quickWhy), 4)
-  end
-  return made
+  pg.bWritScan = NS.footButton(pg, { label = label, onClick = function() NS.scanButton("writs") end,
+    when = function() return NS.favorView() == "writs" end,
+    tip = { label, SCAN_TIP, "It only looks prices up: nothing is bought." } })
 end
 
 NS.favorViews.writs = { key = "writs", title = "Writs", columns = COLUMNS,

@@ -495,6 +495,9 @@ end
 -- Ask for the owned list once per visit, as opening the Auctions tab does. Skipped while a price scan runs.
 local function askOwned(tries)
   if not ahOpen or db().salesAuto == false then return end
+  -- The scan calls this when it ends, and it ends when the auction house closes: its file hears of the close
+  -- before this one does. No request goes out with the auction house closed.
+  if type(KeboldsShinyScan_AtAuctionHouse) == "function" and try(KeboldsShinyScan_AtAuctionHouse) == false then return end
   if type(AH.QueryOwnedAuctions) ~= "function" then
     dlog("no QueryOwnedAuctions: the list is only read when the Auctions tab asks for it")
     return

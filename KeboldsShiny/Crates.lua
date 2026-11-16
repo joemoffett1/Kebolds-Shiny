@@ -1,7 +1,8 @@
 -- Kebold's Shiny: Waylaid Crates (static data, written by hand; LedgerCrates.lua is the model and the page)
 --
 -- WHERE THIS COMES FROM: guide sites written during the beta (zockify, method.gg, foreverdiff, wowf.io,
--- theforeverguides), collected 2026-11-11. NOTHING HERE HAS BEEN SEEN IN GAME. What the sites say:
+-- theforeverguides), collected 2026-11-11. ONLY THE ARTISAN REWARD HAS BEEN SEEN IN GAME (below); the rest is
+-- what the sites say:
 -- * A Waylaid Crate is filled with ONE of its listed options (an item at a quantity) and becomes a Sealed crate,
 --   which is handed in for Merchant's Favor (a per-character currency: the "points") and a little silver. No
 --   reputation per crate. Crates drop from mobs and can be traded and auctioned; a sealed crate binds.
@@ -10,8 +11,13 @@
 --   gives a Shipping Label quest: 50 Favor, once.
 -- * Favor and silver per sealed crate: "raw" crates (Herbs, Ore, Textiles, Curiosities) and "goods" crates
 --   (Fabrics, Ingots, Parts), which give double. Apprentice 5 / 10 Favor and 2s 50c / 5s; Journeyman 10 / 20 and
---   5s / 10s; Expert 15 / 30 and 7s 50c / 15s (ONE site, beta: an estimate, shown with ~); Artisan: not known
---   (shown with ?, until a value is typed on the Settings page).
+--   5s / 10s; Expert 15 / 30 and 7s 50c / 15s (ONE site, beta: an estimate, shown with ~, though it sits
+--   between two known tiers).
+-- * Artisan 20 / 40 Favor and 10s / 20s: SEEN IN GAME by the owner, 2026-11-15 (Horde hand-in in the Barrens, chat
+--   log): a green-quality sealed Artisan crate gave "Merchant's Favor x40" and "Received 20 Silver", a
+--   white-quality one "Merchant's Favor x20" and "Received 10 Silver". ASSUMED, not seen: that green is the
+--   goods crates (Fabrics, Ingots, Parts) and white the raw ones; it fits the other tiers' pattern (goods give
+--   double).
 -- * Legacy talent Performance Bonus: 5 / 10 / 15% chance (rank 1 to 3) that a hand-in gives double Favor.
 -- * Level needed: Apprentice 10, Journeyman 10, Expert 20, Artisan 35.
 --
@@ -24,13 +30,14 @@
 -- One entry: { id = crate item id, tier = 1..4, name = kind, goods = true for the double-Favor crates,
 --   options = { { quantity, item id [, doubt = "..."] [, guess = true] }, ... } }
 KeboldsShinyCrates = {
-  source = "guide sites from the beta (zockify, method.gg, foreverdiff, wowf.io, theforeverguides); not seen in game",
-  -- favor / silver (copper) for a raw crate and a goods crate; est: an estimate (~); nil: not known (?)
+  source = "guide sites from the beta (zockify, method.gg, foreverdiff, wowf.io, theforeverguides); only the Artisan reward was seen in game",
+  -- favor / silver (copper) for a raw crate and a goods crate; est: an estimate (~); seen: seen in game;
+  -- a missing favor or silver: not known (?)
   tiers = {
     { key = "apprentice", name = "Apprentice", level = 10, raw = { favor = 5, silver = 250 }, goods = { favor = 10, silver = 500 } },
     { key = "journeyman", name = "Journeyman", level = 10, raw = { favor = 10, silver = 500 }, goods = { favor = 20, silver = 1000 } },
     { key = "expert", name = "Expert", level = 20, est = true, raw = { favor = 15, silver = 750 }, goods = { favor = 30, silver = 1500 } },
-    { key = "artisan", name = "Artisan", level = 35, raw = {}, goods = {} },
+    { key = "artisan", name = "Artisan", level = 35, seen = true, raw = { favor = 20, silver = 1000 }, goods = { favor = 40, silver = 2000 } },
   },
   perfStep = 0.05,   -- Performance Bonus: chance of double Favor a rank
   perfMax = 3,

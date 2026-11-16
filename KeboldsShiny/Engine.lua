@@ -66,7 +66,30 @@ E.defaults = {
   skillBonus = nil,  -- the skill-up bonus itself (0.10 for 10 points), when the game's talent text was read; beats overtime
   chefExtra = nil,   -- NOT USED any more: the talent's text reads "30%" at every rank, 5/5 included, where the game gives 50%
   exclude = {},      -- [recipe id] = true
+  maxPoint = nil,    -- the most one skill point may cost (copper, after sales): a recipe above it is only used where
+                     -- no other gives a point (the step is then flagged g.over). nil = no limit, and ctx.plan is
+                     -- exactly what it is without the option. In game only (the Level page's Route settings).
 }
+
+-- How many crafts cover a step 9 times out of 10 (not on the web page). cs = the step's expected points per craft
+-- at each of its levels (g.cs, exactly what the expected count is made of: parts made for the craft and Working
+-- Overtime are in it). Each level is a wait for one point with chance p = min(1, c): a geometric wait, mean 1/p
+-- and variance (1 - p) / p^2 (a level with c >= 1 takes 1/c of a craft and has no spread). The waits add up, so
+--   mean = sum of 1/c,  variance = sum of (1 - p) / p^2,  safe = ceil(mean + 1.2816 * sqrt(variance))
+-- (1.2816 = the 90% point of the normal curve; a normal approximation, a little low for a step of very few
+-- levels with a small chance). Never below the expected count ceil(mean). Returns safe, mean, variance.
+-- By hand: five levels at 50% -> mean 10, variance 5 * 0.5 / 0.25 = 10, 10 + 1.2816 * 3.1623 = 14.05 -> 15.
+function E.safeCrafts(cs)
+  local mean, var = 0, 0
+  for _, c in ipairs(cs or {}) do
+    if c > 0 then
+      mean = mean + 1 / c
+      if c < 1 then var = var + (1 - c) / (c * c) end
+    end
+  end
+  local expected = ceil(mean - 1e-6)
+  return max(expected, ceil(mean + 1.2816 * math.sqrt(var) - 1e-6)), mean, var
+end
 
 -- KeboldsShinyData -> tables. Recipes keep the page's order: the route breaks ties by it.
 function E.load(data)
@@ -938,9 +961,12 @@ function E.new(db, env)
         local lc = learnCost(r)
         if lc and lc > 0 then g = g + lc / max(1, min(to, (r.y + r.grey) / 2) - s) end
       end
-      if byTime then return tm, net / c, net, cost end
-      return g, tm, net, cost
+      if byTime then return tm, net / c, net, cost, c end
+      return g, tm, net, cost, c
     end
+    -- opts.maxPoint (off unless set): the most one skill point may cost. With it the choice below is made twice:
+    -- first among the recipes at or under it, and only when none of those gives a point among all of them.
+    local capV = tonumber(o.maxPoint)
     for s = from, to - 1 do
      -- a part for later steps that still gives skill: the one with the best chance, if enough are still needed
      local sp, sc = nil, 0
@@ -952,19 +978,26 @@ function E.new(db, env)
      end
       local best, bm, bt, bn, bc = nil, huge, huge, 0, 0
       local cm, cmNet, cmCost = nil, nil, nil
-      for pass = 0, 1 do
-        for _, r in ipairs(C) do
-          if not (pass == 0 and left[r]) then
-            local m, t, net, cost = score(r, s)
-            if m then
-              if r == cur then cm, cmNet, cmCost = m, net, cost end
-              if m < bm - 1e-9 or (abs(m - bm) < 1e-9 and t < bt) then
-                best, bm, bt, bn, bc = r, m, t, net, cost
+      local over = false
+      for capPass = capV and 1 or 2, 2 do
+        for pass = 0, 1 do
+          for _, r in ipairs(C) do
+            if not (pass == 0 and left[r]) then
+              local m, t, net, cost, pts = score(r, s)
+              if m and (capPass == 2 or net / pts <= capV + 1e-9) then
+                if r == cur then cm, cmNet, cmCost = m, net, cost end
+                if m < bm - 1e-9 or (abs(m - bm) < 1e-9 and t < bt) then
+                  best, bm, bt, bn, bc = r, m, t, net, cost
+                end
               end
             end
           end
+          if best then break end
         end
-        if best then break end
+        if best then
+          over = capV ~= nil and capPass == 2   -- nothing at or under the limit gave a point here
+          break
+        end
       end
       -- stay on the current recipe unless the new pick is clearly better (5%, at least 1c or 0.5s per point)
       if cur and cm and best ~= cur and cm - bm < max(abs(cm) * 0.05, byTime and 0.5 or 1) then
@@ -992,7 +1025,8 @@ function E.new(db, env)
         end
         ah = takeStock(best, c, skip)
       end
-      steps[#steps + 1] = { s = s, r = best, c = c, tc = best and chanceAt(best, s) or 0, net = bn, cost = bc, capped = capped, ah = ah }
+      steps[#steps + 1] = { s = s, r = best, c = c, tc = best and chanceAt(best, s) or 0, net = bn, cost = bc, capped = capped, ah = ah,
+        over = over or nil }
      end
     end
     -- g.ah: [part recipe] = units of it this step takes from the parts made ahead
@@ -1005,8 +1039,10 @@ function E.new(db, env)
         last.nets[#last.nets + 1] = x.net
         last.costs[#last.costs + 1] = x.cost
         last.capped = last.capped or x.capped
+        last.over = last.over or x.over
       else
-        last = { r = x.r, from = x.s, to = x.s + 1, cs = { x.c }, nets = { x.net }, costs = { x.cost }, capped = x.capped, stock = x.stock }
+        last = { r = x.r, from = x.s, to = x.s + 1, cs = { x.c }, nets = { x.net }, costs = { x.cost }, capped = x.capped, stock = x.stock,
+          over = x.over }
         segs[#segs + 1] = last
       end
       if x.ah then
@@ -1040,6 +1076,50 @@ function E.new(db, env)
     local route = { segs = segs, tot = tot, steps = steps, from = from, to = to, prof = prof, stock = stockList }
     if env.learnCost then addLearn(route) end
     return route
+  end
+
+  -- One recipe on its own over a skill range (not on the web page; nothing in the engine reads it): what a step of
+  -- r from `from` would be, as far as r goes on giving points before `to`. Priced the way ctx.plan prices a step,
+  -- but as if nothing had been bought before it: each craft down the listings, AH sales up to the capped share.
+  -- Points count as ctx.ptsAt has them with no parts made ahead. nil when r gives no point at `from` or has no cost.
+  --   { r, from, to (where it stops: `to`, or the level it goes grey), cs, costs, nets, exp, crafts, avg, cost, net,
+  --     time, capped, short = an item it needs more of than is listed }
+  function ctx.stepFor(r, from, to)
+    if not r.col or info(r).cost == nil then return nil end
+    local x = info(r)
+    local g = { r = r, from = from, to = from, cs = {}, costs = {}, nets = {}, capped = false }
+    local used, usedMat = 0, {}
+    local B = bomSup(r)
+    for s = from, to - 1 do
+      if learnOf(r) > s then break end
+      local c = ptsAt(r, s)
+      if c <= 0 then break end
+      local cc = craftCostAt(r, usedMat)
+      local cost = cc and cc.c or x.cost
+      if cc and cc.short then g.short = cc.short end
+      local net = netAt(r, used, cost)
+      if o.sell and x.way == "AH" and used * makes(r) >= (x.listed or 0) * capShare(r) then g.capped = true end
+      used = used + 1 / c
+      if B then
+        for _, b in ipairs(B) do usedMat[b.S.n] = (usedMat[b.S.n] or 0) + b.u / c end
+      end
+      g.cs[#g.cs + 1], g.costs[#g.costs + 1], g.nets[#g.nets + 1] = c, cost, net
+      g.to = s + 1
+    end
+    if g.to == from then return nil end
+    local exp, cost, net = 0, 0, 0
+    for k, c in ipairs(g.cs) do
+      exp = exp + 1 / c
+      cost = cost + g.costs[k] / c
+      net = net + g.nets[k] / c
+    end
+    g.exp = exp
+    g.crafts = ceil(exp - 1e-6)
+    g.avg = (g.to - g.from) / exp
+    g.cost = cost * g.crafts / exp
+    g.net = net * g.crafts / exp
+    g.time = g.crafts * x.secs
+    return g
   end
 
   -- Parts a route makes for its steps that could have given skill before the step that uses them:

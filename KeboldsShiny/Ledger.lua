@@ -59,6 +59,9 @@ local RECIPES = { "trainer only", "+ buyable recipe items", "everything" }
 -- "Sells at": where the plan counts what it makes as sold. On the button: "Sells at: best price".
 local SALES = { best = "best price", vendor = "vendor", off = "not counted" }
 local SALES_MENU = { best = "Best price (vendor or auction house)", vendor = "Vendor", off = "Not counted" }
+-- What the two boxes of the plan bar show: short, so no value is cut at the smallest window ("Recipes [Trainer only]").
+local RECIPES_BOX = { "Trainer only", "Trainer + buyable", "Everything" }
+local SALES_BOX = { best = "Best price", vendor = "Vendor", off = "Not counted" }
 local SALES_NEXT = { best = "vendor", vendor = "off", off = "best" }
 local PICK_TEXT = { auto = "Auto", buy = "Buy", craft = "Make", have = "Have it" }
 local SELL_TEXT = { auto = "Auto", vendor = "Vendor", ah = "Auction house", de = "Disenchant" }
@@ -217,7 +220,7 @@ local function settings()
   if type(s.opts) ~= "table" then s.opts = {} end         -- engine numbers changed on the Settings page
   if type(s.exclude) ~= "table" then s.exclude = {} end   -- [recipe id] = true: skipped in routes
   if type(s.fav) ~= "table" then s.fav = {} end           -- [recipe id] = true: a favourite (Show: favourites, /keboldscan fav)
-  if type(s.recipes) ~= "number" then s.recipes = s.items and 2 or 1 end   -- 1 trainer only, 2 + buyable items, 3 everything
+  if s.recipes ~= 1 and s.recipes ~= 2 and s.recipes ~= 3 then s.recipes = s.items and 2 or 1 end   -- 1 trainer only, 2 + buyable items, 3 everything
   -- the look (addon/UI_PLAN.md, UI_PLAN2.md): skin "auto" | "plain"; win = { x, y, w, h, scale, dock };
   -- fold = { ["route:whole"] = true }; detailOff = true when the details pane is folded away;
   -- coins / icons / profButton (false = off); minimap = { angle, hide }; ahButton "tabs" | "title" | "off";
@@ -415,10 +418,14 @@ end
 local function rangeOf(prof, st)
   local p = planOf(prof)
   local pf, pt = tonumber(p.from), tonumber(p.to)   -- a saved file edited by hand may hold text
-  local from = max(1, min(299, pf or tonumber(st.skill) or 1))
+  local skill = tonumber(st.skill)
+  local from = max(1, min(299, pf or skill or 1))
   local smax = tonumber(st.max)
   local to = pt or ((smax and smax > from) and smax or 300)
-  return from, min(300, max(to, from)), pf ~= nil or pt ~= nil
+  to = min(300, max(to, from))
+  -- at the end of the range with no start typed (skill 300): an empty range, which the pages show as such, not 299 to 300
+  if pf == nil and skill and skill >= to then from = to end
+  return from, to, pf ~= nil or pt ~= nil
 end
 
 -- Unit prices seen at vendors (already with this character's discounts); the cheapest wins. Two tables: what a
@@ -492,6 +499,9 @@ function NS.soldShare(item)
   if ok and share and (auctions or 0) >= MIN_SALES then return share, units, auctions end
   return nil
 end
+
+-- Engine options that have no default (nil = off) and the type each must have.
+local OPT_TYPE = { maxPoint = "number", skillBonus = "number" }
 
 -- The engine set up for one profession with everything the game knows right now.
 local function context(prof, st)
@@ -633,9 +643,15 @@ local function context(prof, st)
       overtime = legacyRank("Working Overtime"), chef = legacyRank("Master Chef"),
       -- Master Chef goes by its rank alone: its text reads "30%" at every rank. A Working Overtime rank typed in on
       -- the Settings page (a plan for someone else) counts 2 points a rank, so the text of your own talent is left out.
-      skillBonus = S.opts.overtime == nil and legacyBonus("Working Overtime") or nil },
+      skillBonus = type(S.opts.overtime) ~= "number" and legacyBonus("Working Overtime") or nil },
   })
-  for k, v in pairs(S.opts) do ctx.opts[k] = v end   -- the engine reads its options when it calculates, not when it is made
+  -- the engine reads its options when it calculates, not when it is made. A saved value is used only when it is of
+  -- the type the engine expects (a saved file edited by hand may hold anything); the recipes left out are not a
+  -- saved option
+  for k, v in pairs(S.opts) do
+    local want = E.defaults[k] ~= nil and type(E.defaults[k]) or OPT_TYPE[k]
+    if want ~= nil and type(v) == want and v == v and k ~= "exclude" then ctx.opts[k] = v end
+  end
   if P then   -- the profile's own Legacy ranks: Working Overtime 2 points a rank, never the owner's talent text
     ctx.opts.overtime, ctx.opts.chef, ctx.opts.skillBonus = P.overtime, P.chef, nil
   end
@@ -693,6 +709,11 @@ function NS.sigOf(prof, st, from, to)
   local P, name = who()   -- whose plan it is, and what of the profile the sums use
   -- the side too: vendor prices are only those read by a character of that side
   local whose = P and table.concat({ "for", name, P.faction, P.overtime, P.chef, P.bartering }, ":") or ("me:" .. (sideOf() or "?"))
+  if not P then   -- your own Legacy talents as the engine gets them, and when they were last read
+    local leg = collected().legacy
+    whose = table.concat({ whose, legacyRank("Working Overtime"), legacyRank("Master Chef"), tostring(legacyBonus("Working Overtime") or ""),
+      tostring(type(leg) == "table" and tonumber(leg.time) or "") }, ":")
+  end
   return table.concat({ prof, from, to, st.skill or 0, st.max or 0, st.nKnown or -1, S.recipes, S.sales,
     S.fast and 1 or 0, priceVersion, nVend, whose }, "|")
 end
@@ -921,10 +942,21 @@ end
 --                               -- /kebold tab; the six keys are route, recipes, shop, scan, sales, settings
 --     title = "Level",          -- the name on the rail and in the head of the window
 --     icon = "Interface\\Icons\\...", order = 1, tip = { "Level", "..." },
---     plan = true,              -- a bar with Profession, From, to, My skill, Recipes and Sell crafts (page.planBar)
---     bars = 1,                 -- rows of the page's own controls (page.bar, 26 pixels each; page.at places them);
---                               -- with plan = true the first row ends with Cheapest | Fastest (page.modes)
+--     plan = true,              -- the plan bar (page.planBar), two rows: Profession, From, to, My skill and Plan
+--                               -- for at the right end; then Recipes and Sells at
+--     bars = 1,                 -- rows of the page's own controls (page.bar, 26 pixels each; page.at places them:
+--                               -- at.put from the left, at.right for Find at the row's right end). A row that
+--                               -- does not fit the page wraps and the bar grows, unless the page states barH.
+--                               -- A page with plan = true and no bars puts its filters on the plan bar's second
+--                               -- row (page.at is then the plan bar's: Craft)
 --     detail = true,            -- the list shares the page with the details pane (page.split), which can be folded
+--                               -- with the Details button the shell puts at the right end of the last row of
+--                               -- controls (page.bDetails; on a page with a plan: the plan bar's second row)
+--     footLead / footTip        -- with footer = "plan": a count that leads the footer's line; what the page says
+--                               -- about its list (lines, or a function), as the tooltip of that line and of ?
+--     barKey = function(page)   -- what the rows of controls depend on besides the size (a view): placed again
+--                               -- when it changes
+--     (footer buttons: NS.footButton(page, {...}) in build; a row with aside = true stays out of the table)
 --     columns = { ... },        -- UI.table columns: the shell makes page.table and gives it the page's rows
 --     empty = { ... },          -- UI.table's empty state (or a function returning one)
 --     rows = function(page) return rows, title end,   -- the model: row tables, nothing else. /kebold print and
@@ -940,12 +972,30 @@ end
 --   })
 --
 -- What the shell adds to the table it was given: .frame (the page, a child of the window's body), .planBar,
--- .bar, .at (NS.placer on the bar: at.put(widget, gap), at.label(text, width), at.row(n)), .modes, .split, .table,
--- .w, .h. Registering a key again replaces the page (the Shopping placeholder is replaced that way).
+-- .bar, .at (NS.placer on the bar: at.put(widget, gap), at.right(widget, gap), at.label(text), at.row(n)),
+-- .bDetails, .split, .table, .w, .h. Registering a key again replaces the page (the Shopping placeholder is
+-- replaced that way). The shell puts Cheapest | Fastest on no page (NS.modeButtons still makes the two buttons).
 local pages = {}
 local PAGE_ALIAS = { level = "route", route = "route", craft = "recipes", recipes = "recipes", shopping = "shop", shop = "shop",
   prices = "scan", scan = "scan", sales = "sales", mysales = "sales", settings = "settings" }
 NS.PAGE_ALIAS = PAGE_ALIAS
+
+-- The rail has two groups with a thin rule between them: the work pages (Level, Craft, Disenchant, Merchant's
+-- Favor, Shopping) and the utility pages (Prices, My sales, Settings). A page may say its own (`group = 2`).
+local UTILITY = { scan = true, sales = true, settings = true }
+local function navGroup(p)
+  return tonumber(p.group) or (UTILITY[p.key] and 2 or 1)
+end
+-- What a page says about its own list, for the tooltip of the footer's line and of the ? button: page.footTip, a
+-- list of lines (the first is the title) or a function returning one.
+function NS.footTip(page)
+  local t = page and page.footTip or nil
+  if type(t) == "function" then
+    local ok, v = pcall(t, page)
+    t = ok and v or nil
+  end
+  return type(t) == "table" and t or nil
+end
 
 local function sortPages()
   for i = #TAB_ORDER, 1, -1 do TAB_ORDER[i] = nil end
@@ -968,7 +1018,7 @@ function NS.page(def)
   PAGE_ALIAS[def.key] = def.key
   sortPages()
   if frame and type(frame.nav) == "table" then
-    if frame.nav.buttons[def.key] then frame.nav:SetLabel(def.key, def.title) else frame.nav:Add(def.key, def.title, def.icon, def.tip) end
+    if frame.nav.buttons[def.key] then frame.nav:SetLabel(def.key, def.title) else frame.nav:Add(def.key, def.title, def.icon, def.tip, navGroup(def)) end
   end
   return def
 end
@@ -1267,8 +1317,36 @@ function NS.rowMenu(row)
   return items
 end
 
+-- A left click on a line whose details the pane shows or could show (owner 2026-11-14): on the line that is open
+-- already it closes the pane; while the pane is closed it selects the line and opens it; on another line it just
+-- switches. Every page with a split asks here before it selects:
+--   NS.detailClick(same [, button]) -> true: the pane was closed, there is nothing more to do
+--                                      false: go on and select (the pane is unfolded; the caller refreshes)
+--   same = the line clicked is the one whose details are showing now
+-- A right click and a Shift-click never close anything. The Details button follows (it reads the same saved
+-- switch, S.detailOff, on the refresh).
+function NS.detailClick(same, button)
+  local S = settings()
+  if button == "RightButton" or shiftDown() then return false end
+  local page = currentPage()
+  local s = page and page.split
+  local open = S.detailOff ~= true and type(s) == "table" and s.rightW > 0
+  if same and open then
+    S.detailOff = true
+    refresh()
+    return true
+  end
+  S.detailOff = nil
+  return false
+end
+-- Is the shared details pane (a recipe's or an item's) what the page's split shows now?
+local function sharedPaneShows(page)
+  return page ~= nil and page.detail and not (page.detailMine and page.detailMine(page) == true)
+end
+
 -- A click on a line. Left: a line with its own action runs it; a line that exists to choose opens its menu; a
--- recipe opens its panel; a material searches the auction house. Shift links. Right: the line's menu.
+-- recipe opens its panel (a second click on the open one closes the pane); a material searches the auction house.
+-- Shift links. Right: the line's menu.
 local function rowClick(b, button)
   local row = rawget(b, "row")
   if not row then return end
@@ -1285,11 +1363,14 @@ local function rowClick(b, button)
     if #items > 0 then UI.menu(b, items) end
     return
   end
+  local page = currentPage()
   if row.itemPanel and NS.openItemPanel then   -- a line of My sales: the item's auctions and price history
+    if NS.detailClick(sharedPaneShows(page) and NS.detailItem ~= nil and NS.detailItem() == row.itemPanel, button) then return end
     NS.openItemPanel(row.itemPanel)
     return
   end
   if row.recipe and NS.openPanel then   -- a recipe: its details in the pane beside the list
+    if NS.detailClick(sharedPaneShows(page) and NS.detailRecipe ~= nil and NS.detailRecipe() == row.recipe, button) then return end
     NS.openPanel(row.recipe)
     return
   end
@@ -1345,22 +1426,53 @@ end
 
 -- Puts controls into a bar from left to right:
 --   at.put(widget, gap, width) -> widget     at.label(text, width) -> FontString     at.row(n) starts row n
+--   at.right(widget, gap, width) -> widget   at the right end of the row (Find, Details), in the order added
+--   at.sub(when) -> at2, made                the same bar, for controls placed and shown only while when() is true
+--                                            (the two views of Merchant's Favor); made lists what at2 placed
 --   at.x is where the next one goes
+-- Behind it is a UI.flow (at.flow): the shell lays it out again with the page's width (at.flow:Layout(w)), so a
+-- row that does not fit wraps onto a further row, and a new Row size moves the controls to their new widths.
 function NS.placer(bar, x0)
-  local at = { x = x0 or 0, y = -2 }
-  function at.put(w, gap, width)
-    w:SetPoint("TOPLEFT", bar, "TOPLEFT", at.x, at.y)
-    at.x = at.x + (width or tonumber((w:GetWidth())) or 0) + (gap or 4)
-    return w
+  local at = { x = x0 or 0, y = -2, n = 1 }
+  local flow = UI.flow(bar, WIN.bar, x0 or 0)
+  at.flow = flow
+  local function make(a, when, made)
+    function a.put(w, gap, width, right)
+      flow:Add(w, { gap = gap or 4, w = width, row = at.n, when = when, right = right == true })
+      if right ~= true then
+        w:SetPoint("TOPLEFT", bar, "TOPLEFT", at.x, at.y)
+        at.x = at.x + (width or UI.widthOf(w)) + (gap or 4)
+      end
+      if made then made[#made + 1] = w end
+      return w
+    end
+    function a.right(w, gap, width) return a.put(w, gap, width, true) end
+    function a.label(text, width)
+      local fs = UI.text(bar, "body", text)
+      fs.kitW = 0
+      function fs.kitFit(self)   -- the font follows the Row size, the width its text
+        local fonts = UI.ctlFonts()
+        pcall(self.SetFontObject, self, fonts.text)
+        self.kitW = max(UI.textWidth(text, fonts.text) + 2, width or 0)
+      end
+      fs:kitFit()
+      UI.fitLater(fs)
+      flow:Add(fs, { gap = 4, row = at.n, when = when, dy = 5 })
+      fs:SetPoint("TOPLEFT", bar, "TOPLEFT", at.x, at.y - 5)
+      at.x = at.x + fs.kitW + 4
+      if made then made[#made + 1] = fs end
+      return fs
+    end
+    function a.row(n)
+      at.n = n
+      at.x, at.y = x0 or 0, -2 - (n - 1) * WIN.bar
+    end
+    return a
   end
-  function at.label(text, width)
-    local fs = UI.text(bar, "body", text)
-    fs:SetPoint("TOPLEFT", bar, "TOPLEFT", at.x, at.y - 5)
-    at.x = at.x + width
-    return fs
-  end
-  function at.row(n)
-    at.x, at.y = x0 or 0, -2 - (n - 1) * WIN.bar
+  make(at)
+  function at.sub(when)
+    local made = {}
+    return make({ flow = flow }, when, made), made
   end
   return at
 end
@@ -1409,17 +1521,25 @@ local SALES_TIP = {
   off = "What the products sell for is not counted: the route shows what you spend.",
 }
 
--- The plan's controls, for the pages that plan (Level and Craft): Profession, From, to, My skill, Recipes, Sell
--- at. Each page gets its own bar. Fields: .dProf, .eFrom, .eTo, .bMine, .dRecipes, .dSell, .used (its width),
--- :Refresh()
+-- The plan's controls, for the pages that plan (Level and Craft), in two rows: what am I looking at (Profession,
+-- From, to, My skill; Plan for at the right end), then how the list is counted (Recipes, Sells at). Each page gets
+-- its own bar. Fields: .dWho, .dProf, .eFrom, .eTo, .bMine, .dRecipes, .dSell (the four d... are UI.choice: .label
+-- is the value's text, .getItems the menu), .at / .flow (its placer: a page may go on with row 2), .used (the
+-- width its rows need), .h, :Layout(w) -> height, :Refresh()
 function NS.planBar(parent)
   local bar = CreateFrame("Frame", nil, parent)
-  bar:SetSize(680, WIN.bar)
+  bar:SetSize(680, 2 * WIN.bar)
   local at = NS.placer(bar)
-  -- Whose plan this is: the character's own ("Me") or a profile (a plan for somebody else).
-  bar.dWho = at.put(UI.dropdown(bar, 84, function()
+  bar.at, bar.flow = at, at.flow
+  -- Row 1, what am I looking at: the profession (first and widest), the range, and at the right end whose plan
+  -- this is: the character's own ("Me") or a profile (a plan for somebody else).
+  bar.dWho = at.right(UI.choice(bar, "Plan for", function()
+    local list = { "Me" }
+    for _, n in ipairs(NS.profiles()) do list[#list + 1] = n end
+    return list
+  end, function()
     local _, name = who()
-    return name and (GOLD .. name .. "|r") or "Plan for: Me"
+    return name and (GOLD .. name .. "|r") or "Me"
   end, function()
     local P, name = who()
     local items = { { title = true, text = "Plan for" } }
@@ -1459,8 +1579,8 @@ function NS.planBar(parent)
       "Vendor prices are the original game's price list less 5% a Bartering rank, not what vendors showed you (those carry your own discounts). Auction prices are this realm's.",
       "How well things sell still comes from your own auctions.",
       "Ranges, Buy / Make / Have it, where a product sells and skipped recipes are this profile's own." }
-  end))
-  bar.dProf = at.put(UI.dropdown(bar, 114, function()
+  end, 70, 170), 0)
+  bar.dProf = at.put(UI.choice(bar, "", function() return data().profs end, function()
     local cur = shown()
     return cur and cur.prof or (settings().prof or "Profession")
   end, function()
@@ -1477,12 +1597,12 @@ function NS.planBar(parent)
         end }
     end
     return items
-  end, { "Profession", "Any of the nine can be planned, whether this character has it or not. Yours show your skill and cap." }))
-  at.label("From", 28)
-  bar.eFrom = at.put(makeEdit(bar, "from"), 2)
-  at.label("to", 14)
-  bar.eTo = at.put(makeEdit(bar, "to"), 6)
-  bar.bMine = at.put(UI.button(bar, "My skill", 56, function()
+  end, { "Profession", "Any of the nine can be planned, whether this character has it or not. Yours show your skill and cap." }, 150), 10)
+  at.label("From")
+  bar.eFrom = at.put(makeEdit(bar, "from"), 6)
+  at.label("to")
+  bar.eTo = at.put(makeEdit(bar, "to"), 8)
+  bar.bMine = at.put(UI.button(bar, "My skill", nil, function()
     local prof = settings().prof or (current and current.prof)
     if prof then
       local p = planOf(prof)
@@ -1492,18 +1612,21 @@ function NS.planBar(parent)
     NS.resetScroll()
     refresh()
   end, { "My skill", "Back to planning from your own skill to your cap (for a profile: from 1 to 300)." }))
-  bar.dRecipes = at.put(UI.dropdown(bar, 176, function() return "Recipes: " .. RECIPES[settings().recipes] end, function()
+  -- Row 2, how the list is counted: which recipes may be used and where the products sell. A page's own filters
+  -- follow on the same row (Craft), Find and Details are at its right end.
+  at.row(2)
+  bar.dRecipes = at.put(UI.choice(bar, "Recipes", RECIPES_BOX, function() return RECIPES_BOX[settings().recipes] end, function()
     local items = { { title = true, text = "Recipes the route may use" } }
-    for i, text in ipairs(RECIPES) do
+    for i, text in ipairs(RECIPES_BOX) do
       items[#items + 1] = { radio = true, checked = settings().recipes == i, text = text, tip = RECIPES_TIP[i], func = function()
         settings().recipes = i
         refresh()
       end }
     end
     return items
-  end, { "Recipes the route may use", "trainer only: " .. RECIPES_TIP[1], "+ buyable recipe items: " .. RECIPES_TIP[2], "everything: " .. RECIPES_TIP[3],
-    "Scans follow this choice." }))
-  bar.dSell = at.put(UI.dropdown(bar, 146, function() return "Sells at: " .. SALES[settings().sales] end, function()
+  end, { "Recipes the route may use", "Trainer only: " .. RECIPES_TIP[1], "Trainer + buyable: " .. RECIPES_TIP[2], "Everything: " .. RECIPES_TIP[3],
+    "Scans follow this choice." }), 8)
+  bar.dSell = at.put(UI.choice(bar, "Sells at", { SALES_BOX.best, SALES_BOX.vendor, SALES_BOX.off }, function() return SALES_BOX[settings().sales] end, function()
     local items = { { title = true, text = "Sells at" } }
     for _, key in ipairs(SALES_ORDER) do
       items[#items + 1] = { radio = true, checked = settings().sales == key, text = SALES_MENU[key], tip = SALES_TIP[key], func = function()
@@ -1513,8 +1636,16 @@ function NS.planBar(parent)
     end
     return items
   end, { "Sells at", "Where the things you make are counted as sold. This is about the plan's sums; My sales is about your real auctions.",
-    "One product can be set on its own: right-click its line." }))
-  bar.used = at.x
+    "One product can be set on its own: right-click its line." }), 10)
+  bar.used, bar.h = at.x, 2 * WIN.bar
+  -- Places the rows in the width given; returns the bar's height (two rows, more when a row had to wrap).
+  function bar:Layout(w)
+    self.dWho:Fit()   -- a profile's name may have changed
+    self.h = self.flow:Layout(w)
+    self.used = self.flow.need
+    self:SetSize(w, self.h)
+    return self.h
+  end
   function bar:Refresh()
     self.dWho:Refresh()
     self.dProf:Refresh()
@@ -1577,15 +1708,18 @@ local function buildPage(page)
   page.frame = fr
   fr:SetPoint("TOPLEFT", frame.body, "TOPLEFT", WIN.pad, -WIN.pad)
   if page.plan then page.planBar = NS.planBar(fr) end
+  page.barFixed = page.barH ~= nil   -- a page whose bar holds more than rows of controls says how tall it is
+  page.barShared = false
   if (page.bars or 0) > 0 then
     page.bar = CreateFrame("Frame", nil, fr)
-    page.barH = page.barH or page.bars * WIN.bar   -- a page whose bar holds more than rows of controls says how tall it is
+    page.barH = page.barH or page.bars * WIN.bar
     page.at = NS.placer(page.bar)
-    if page.plan then
-      page.modes = NS.modeButtons(page.bar)
-      page.modes:SetPoint("TOPRIGHT", page.bar, "TOPRIGHT", 0, -2)
-    end
+  elseif page.planBar then
+    -- a page with a plan and no bar of its own puts its filters on the plan bar's second row (Craft)
+    page.bar, page.at, page.barShared = page.planBar, page.planBar.at, true
   end
+  -- (Cheapest | Fastest is no longer put on any page by the shell: the engine reads it only when a route is
+  -- planned. NS.modeButtons is kept for whoever wants the two buttons.)
   local host = fr
   if page.detail then
     page.split = UI.split(fr, { rightWidth = WIN.detail, minLeft = WIN.list, minRight = WIN.detailMin,
@@ -1608,6 +1742,54 @@ local function buildPage(page)
     page.shellTable = true   -- a table a page makes itself (Settings) is the page's to size
   end
   if page.build then page.build(page) end
+  -- A page with a split gets "Details" at the right end of its last row of controls, after Find: pressed while the
+  -- pane shows. On a page with a plan that row is the plan bar's second (the page's own row stays the page's).
+  if page.split then
+    local at = (page.planBar and page.planBar.at) or page.at
+    if at then
+      local host = page.planBar or page.bar
+      page.bDetails = at.right(UI.toggle(host, "Details", nil, function()
+        return not page.split:IsCollapsed() and page.split.rightW > 0
+      end, function(v)
+        page.split:SetCollapsed(not v)
+      end, function()
+        if page.split.forced == true then return { "Details", "The window is too narrow for the details beside the list: make it wider." } end
+        return page.split:IsCollapsed() and { "Details", "Shows the details beside the list." } or { "Details", "Folds the details away; the list gets the whole width." }
+      end), 0)
+    end
+  end
+end
+
+-- A button in the footer's right side, for the page: NS.footButton(page, { label =, onClick =, tip =, why = fn,
+-- when = fn, scan = false }). The first one made is the rightmost. A scan button (the default) is greyed out away
+-- from the auction house (NS.scanControl; `why` gives another reason it cannot run). `when()` false hides it (a
+-- view's own scan). The shell places them, hides them while a scan's bar shows, and keeps the status line clear of
+-- them (page.footRoom).
+function NS.footButton(page, o)
+  local b = UI.button(frame, o.label, nil, o.onClick, o.tip)
+  if o.scan ~= false then NS.scanControl(b, o.why) end
+  b.footAuto, b.footWhen, b.footOff, b.footX = true, o.when or false, false, 0
+  page.footWidgets = type(page.footWidgets) == "table" and page.footWidgets or {}
+  page.footWidgets[#page.footWidgets + 1] = b
+  b:Hide()
+  return b
+end
+local function footPlace(page)
+  if type(page.footWidgets) ~= "table" then return end
+  local x, any = 26, false
+  for _, b in ipairs(page.footWidgets) do
+    if b.footAuto == true then
+      any = true
+      if b.footWhen ~= false then b.footOff = not b.footWhen() end
+      if b.footOff ~= true then
+        b:ClearAllPoints()
+        b:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -x, 3)
+        b.footX = x
+        x = x + (tonumber((b:GetWidth())) or 0) + 6
+      end
+    end
+  end
+  if any then page.footRoom = max(270, x + 8) end   -- 270: a running scan's bar takes the buttons' place
 end
 
 -- Gives the page showing its size: the plan bar, its own bar, then the split or the table in what is left.
@@ -1621,15 +1803,19 @@ local function layout(force)
   page.w, page.h, page.off = w, h, off
   page.frame:SetSize(w, h)
   -- the footer's line ends where its buttons (or a running scan's bar) begin: page.footRoom pixels from the right
+  footPlace(page)
   frame.status:SetWidth(max(120, w + WIN.side + 8 + 2 * WIN.pad - 14 - (page.footRoom or 270)))
+  frame.statusTip:SetSize(max(120, w + WIN.side + 8 + 2 * WIN.pad - 14 - (page.footRoom or 270)), 20)
   local y = 0
   if page.planBar then
     page.planBar:ClearAllPoints()
     page.planBar:SetPoint("TOPLEFT", page.frame, "TOPLEFT", 0, 0)
-    page.planBar:SetSize(w, WIN.bar)
-    y = y + WIN.bar
+    y = y + page.planBar:Layout(w)   -- two rows; more when a row had to wrap
   end
-  if page.bar then
+  if page.bar and not page.barShared then
+    -- the page's own rows: placed again in this width; a row that does not fit wraps and the bar grows
+    local fh = page.at.flow:Layout(w)
+    if not page.barFixed then page.barH = max(fh, (page.bars or 1) * WIN.bar) end
     page.bar:ClearAllPoints()
     page.bar:SetPoint("TOPLEFT", page.frame, "TOPLEFT", 0, -y)
     page.bar:SetSize(w, page.barH)
@@ -1682,7 +1868,8 @@ function NS.onScanTick(p)
     footWidgets(here)
   else
     frame.footBar:Hide()
-    if plan then frame.footScan:Show() else frame.footScan:Hide() end
+    -- Craft shows the plan's price status but no scan button (owner 2026-11-14: "there is no plan there")
+    if plan and page.footNoScan ~= true then frame.footScan:Show() else frame.footScan:Hide() end
     footWidgets(false)
   end
 end
@@ -1698,7 +1885,7 @@ local function chrome(title)
   frame.nav:Select(page and page.key)
   if page and type(page.marks) == "table" and #page.marks > 0 then frame.help:Show() else frame.help:Hide() end
   if page and page.planBar then page.planBar:Refresh() end
-  if page and page.modes then page.modes:Refresh() end
+  if page and type(page.bDetails) == "table" then page.bDetails:Refresh() end
   local cur = shown()
   if cur and frame.iconProf ~= cur.prof then   -- the round picture: the profession shown
     frame.iconProf = cur.prof
@@ -1719,6 +1906,14 @@ local function chrome(title)
   local foot = ""
   if page and page.footer == "plan" then
     foot = okS and status or ""
+    -- a page may lead the line with a count of its own ("123 Cooking recipes"); the plan's status follows it
+    -- without naming the profession twice
+    local okL, lead = pcall(function() return page.footLead and page.footLead(page) or nil end)
+    if okL and type(lead) == "string" and lead ~= "" then
+      local c = shown() or NS.state()
+      if c then foot = foot:gsub(c.prof .. " prices: ", "prices: ", 1) end
+      foot = lead .. DIM .. "  \194\183  |r" .. foot
+    end
   elseif page and type(page.footer) == "function" then
     local okF, text = pcall(page.footer, page)
     foot = (okF and type(text) == "string") and text or ""
@@ -1762,7 +1957,13 @@ function refresh()
     say("Error: " .. tostring(a))
     b = "Kebold's Shiny"
   end
-  layout(fresh)
+  -- what the rows of controls depend on besides the window's size: the Row size, whose plan it is (the Plan for
+  -- box is as wide as the name), and whatever the page says (page.barKey: the view of Merchant's Favor)
+  local okK, barKey = pcall(function() return page.barKey and page.barKey(page) or "" end)
+  local layKey = UI.density().key .. "|" .. tostring(select(2, who()) or "") .. "|" .. tostring(okK and barKey or "")
+  local again = page.layKey ~= layKey
+  page.layKey = layKey
+  layout(fresh or again)
   if page.detail and NS.detailAttach then
     local okD, errD = pcall(NS.detailAttach, page)   -- after the layout: the pane goes where the split put its right side
     if not okD then say("Error: " .. tostring(errD)) end
@@ -1770,7 +1971,13 @@ function refresh()
   if type(page.table) == "table" then
     local view = rows
     if ok and page.view then view = page.view(page, rows) or rows end
-    page.table:SetRows(view)
+    -- a row with aside = true is said elsewhere on the page (the footer, a tooltip): it stays in the model, so
+    -- /kebold print and the tests still have it, and out of the list
+    local list, any = {}, false
+    for _, row in ipairs(view) do
+      if row.aside == true then any = true else list[#list + 1] = row end
+    end
+    page.table:SetRows(any and list or view)
   end
   if ok and page.paint then
     local okP, errP = pcall(page.paint, page, rows, b)
@@ -1946,6 +2153,8 @@ local function createFrame()
   end, function()
     local tip = { "Marks on this page" }
     for _, line in ipairs(NS.marksKey(currentPage())) do tip[#tip + 1] = line end
+    local about = NS.footTip(currentPage())   -- what the page says about its own list, as under the footer's line
+    for i = 2, about and #about or 0 do tip[#tip + 1] = about[i] end
     return tip
   end)
   f.help:SetPoint("LEFT", f.pageTitle, "RIGHT", 8, 0)
@@ -1958,7 +2167,7 @@ local function createFrame()
   f.nav:SetPoint("TOPLEFT", f, "TOPLEFT", 6, -(WIN.top + 4))
   for _, key in ipairs(TAB_ORDER) do
     local p = pages[key]
-    if p then f.nav:Add(key, p.title, p.icon, p.tip) end
+    if p then f.nav:Add(key, p.title, p.icon, p.tip, navGroup(p)) end
   end
 
   -- the footer
@@ -1972,6 +2181,18 @@ local function createFrame()
   f.status:SetJustifyH("LEFT")
   f.status:SetWordWrap(false)
   f.footText, f.footKind = "", "none"
+  -- hovering the footer's line explains it: what the page showing says about itself (page.footTip)
+  f.statusTip = CreateFrame("Frame", nil, f)
+  f.statusTip:SetPoint("BOTTOMLEFT", 14, 4)
+  f.statusTip:SetSize(300, 20)
+  f.statusTip:EnableMouse(true)
+  -- (a page that says nothing has its line in full there: a long one is cut where the buttons begin)
+  UI.tip(f.statusTip, function()
+    local tip = NS.footTip(currentPage())
+    if tip then return tip end
+    local page = currentPage()
+    if f.footText ~= "" then return { page and page.title or "Status", f.footText } end
+  end)
   f.footScan = NS.scanControl(UI.button(f, NS.scanLabel and NS.scanLabel("plan") or "Scan this plan", 110, function()
     local cur = shown()
     if cur then scanButton(string.lower(cur.prof)) end
@@ -2294,7 +2515,8 @@ SlashCmdList["KEBOLDSSHINY"] = function(msg)
     toggle()
     return
   end
-  local prof = (current and current.prof) or S.prof or myProfs()[1] or data().profs[1]
+  -- the profession chosen (the plan bar's), as setRange and the My skill button take it
+  local prof = S.prof or (current and current.prof) or myProfs()[1] or data().profs[1]
   local which, value = cmd:match("^(%a+)%s+(%S+)$")
   if ALIAS[cmd] then
     S.prof = ALIAS[cmd]
@@ -2305,6 +2527,7 @@ SlashCmdList["KEBOLDSSHINY"] = function(msg)
   elseif cmd == "mine" then
     local p = planOf(prof)
     p.from, p.to = nil, nil
+    NS.forgetState(prof)
   elseif cmd == "recipes" or cmd == "items" then
     S.recipes = S.recipes % 3 + 1
     say("Recipes the route may use: " .. RECIPES[S.recipes] .. "." .. (S.recipes >= 2 and " Scan this plan again so the recipe items are looked up." or ""))
@@ -2416,6 +2639,7 @@ function NS.setDensity(v)
     elseif type(frame.SetMinResize) == "function" then
       pcall(frame.SetMinResize, frame, minW(), WIN.minH)
     end
+    UI.refit()   -- buttons, labelled dropdowns and labels take the new font and their new widths
     for _, pg in pairs(pages) do pg.w = nil end   -- every page lays itself out again when it is next shown
     refresh()
   end

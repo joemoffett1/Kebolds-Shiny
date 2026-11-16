@@ -125,12 +125,27 @@ local function lineOf(id, state)
       row.tip[#row.tip + 1] = "Cheapest listings: " .. table.concat(steps, ", ") .. (#L.tiers > 4 and ", ..." or "")
     end
     cols[3] = row.listed and tostring(row.listed) or ""
+  elseif state == "timeout" then
+    -- no answer this time: the scan keeps the item's earlier reading, and so does the line, dimmed
+    local L = NS.E.parseLadder(NS.realmItems()[id])
+    local low = L and L.tiers[1] and L.tiers[1][1] or nil
+    if low then
+      row.kept, row.price, row.listed = true, low, L.total
+      cols[2] = DIM .. KeboldsShinyUI.plainText(NS.money(low)) .. "|r"
+      cols[3] = L.total and (DIM .. tostring(L.total) .. "|r") or ""
+      cols[5] = RED .. "timeout|r" .. DIM .. ", earlier price|r"
+    elseif L then
+      row.kept = true
+      cols[5] = DIM .. "earlier: none listed|r"
+    end
   elseif state == "waiting" or state == "skipped" then
     cols[1] = DIM .. name .. "|r"
   end
   local med, days = usualPrice(id, day)
   row.usual = med
-  if med and row.price then
+  if row.kept then
+    -- the earlier reading is not compared with the usual price: it is one of the readings that make it
+  elseif med and row.price then
     local pct = (row.price - med) / med * 100
     row.vs = pct
     local text = string.format("%+d%%", floor(pct + 0.5))
@@ -141,7 +156,10 @@ local function lineOf(id, state)
   elseif state == "found" then
     cols[5] = FAINT .. "first reading|r"   -- nothing to compare with yet: fainter than the other dim texts
   end
-  if state == "timeout" then row.tip[#row.tip + 1] = "The auction house did not answer for this item: it has no price now. Scan it again." end
+  if state == "timeout" then
+    row.tip[#row.tip + 1] = row.kept and "The auction house gave no answer this time; showing the earlier reading, which Kebold goes on using. Scan it again."
+      or "The auction house gave no answer for this item and there is no earlier reading: it has no price now. Scan it again."
+  end
   row.cols = cols
   cache[id] = row
   return row

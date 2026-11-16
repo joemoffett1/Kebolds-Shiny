@@ -381,11 +381,16 @@ function NS.buildScan()
     local can = at and not p and preset.count > 0 and preset.blocked == nil
     local why = (not can) and (p and "A scan is running: stop it first." or ((not at) and "Open the auction house first."
       or (preset.blocked or ("Nothing to scan: " .. preset.info .. ".")))) or nil
+    -- the tooltip's lines, one after the other with no gap (a nil in the middle of a list ends it for the game)
+    local tip = {}
+    for _, line in ipairs({ preset.label or preset.text or "", preset.tip or false, can and "Keep the auction house open while it runs." or false,
+        DIM .. "The same as /keboldscan" .. ((preset.word or "") ~= "" and (" " .. preset.word) or "") .. "|r" }) do
+      if type(line) == "string" then tip[#tip + 1] = line end
+    end
     out[#out + 1] = { left = "   " .. preset.text, right = (can and "" or DIM) .. preset.info .. (can and "" or "|r"), card = "scan",
       preset = preset.key, name = preset.name, info = preset.info, can = can, why = why,
       action = function() NS.scanButton(preset.word) end,
-      tip = { preset.label, preset.tip, can and "Keep the auction house open while it runs." or nil,
-        DIM .. "The same as /keboldscan" .. (preset.word ~= "" and (" " .. preset.word) or "") .. "|r" } }
+      tip = tip }
   end
   if p then
     out[#out + 1] = { left = "   Stop the scan", stop = true, card = "scan", action = function()
@@ -867,15 +872,15 @@ NS.page({ key = "sales", title = "My sales", order = 5, icon = "Interface\\Icons
         end
       end, { VIEW[key], VIEW_TIP[key] }), 2)
     end
-    at.x = at.x + 10
-    page.eSales = at.put(UI.search(bar, 150, function(self)
+    -- Find at the right end of the row (Details follows it, from the shell)
+    page.eSales = at.right(UI.search(bar, 150, function(self)
       local t = self:GetText() or ""
       if t ~= search then
         search = t
         NS.resetScroll()
         NS.refresh()
       end
-    end))
+    end), 6)
     page.eSales:SetMaxLetters(30)
     -- second row: what the list is
     page.caption = UI.text(bar, "dim")

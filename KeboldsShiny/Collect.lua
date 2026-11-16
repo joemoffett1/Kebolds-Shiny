@@ -151,9 +151,9 @@ local function collectRecipes(force)
   if type(prof) ~= "table" or not prof.professionName or prof.professionName == "" then return end
   -- the list event fires after every craft; one read of a profession per half minute is plenty
   if not force and lastRead[prof.professionName] and GetTime() - lastRead[prof.professionName] < REREAD_AFTER then return end
-  lastRead[prof.professionName] = GetTime()
   local ids = try(T.GetAllRecipeIDs)
-  if type(ids) ~= "table" or #ids == 0 then return end
+  if type(ids) ~= "table" or #ids == 0 then return end   -- the list is not there yet: the next event reads it
+  lastRead[prof.professionName] = GetTime()
   local list, n, learned = {}, 0, 0
   for _, id in ipairs(ids) do
     local line, known = recipeLine(id)

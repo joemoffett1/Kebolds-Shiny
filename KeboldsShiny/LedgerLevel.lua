@@ -27,6 +27,16 @@
 --            drawn over the line's last cell (the text of that cell is the same choice, for print and tests)
 --   button   true: an action of the page or the pane (left = its label, action = what it does); drawn as a button
 --   where, pin                            a recipe to learn: where it is taught or sold, and the map pin's target
+--   started, changed, at, cheaper         the banner of a started plan (lv "all": both views; LedgerRoute.lua)
+--   done, now, nowLine                    a step of a started plan that is behind you / the one you are in / its
+--                                         "you are here" second line
+--   safe, over, own                       a step's count for bad luck (the Crafts cell then ends in ~), a step above
+--                                         the limit for one skill point, a step whose recipe you chose (ends in *)
+--   alt, altNote, altHead                 the pane's "Other recipes for this range": an alternate (the table from
+--                                         NS.stepAlternates), its line of words, the block's head
+--   safeRow                               the pane's "to be safe" line under the step's buy list
+-- A started plan (LedgerRoute.lua) is drawn by the same code from its save: the route is then NS.startedRoute(),
+-- whose steps carry rec (the saved step), and nothing here plans.
 -- The shell, the shared state and the menus are in Ledger.lua; the recipe's own details are LedgerRecipes.lua's.
 
 local NS = KeboldsShinyNS
@@ -42,7 +52,8 @@ local scanScope, vendorPrices = NS.scanScope, NS.vendorPrices
 local BOOK = "Interface\\Icons\\INV_Misc_Book_09"
 
 -- What the page remembers between refreshes (this session only).
-local sel = { id = nil, from = nil }   -- the step chosen: its recipe (false = a range with no recipe) and its start
+local sel = { id = nil, from = nil, follow = true }   -- the step chosen: its recipe (false = a range with no recipe) and its
+                                                      -- start; follow = nothing was clicked: a started plan shows the step you are in
 local paneMode = "step"                -- "step": the pane shows the selected step; "recipe": the Craft page's pane
 local shownStep = nil                  -- the step the model was built for: { i, g, r, n, prof }
 local page                             -- the registration table (set at the end of the file)
@@ -68,6 +79,22 @@ local function chanceRange(g)
   return string.format("%.0f>%.0f%%", a, b)
 end
 
+-- The same in words, for the pane: "62% to 25%".
+local function chanceWords(g)
+  local a, b = 100 * g.cs[1], 100 * g.cs[#g.cs]
+  if floor(a + 0.5) == floor(b + 0.5) then return string.format("%.0f%%", a) end
+  return string.format("%.0f%% to %.0f%%", a, b)
+end
+
+-- Every cell of a line in grey: a step of a started plan that is behind you.
+local function dimRow(row)
+  for _, k in ipairs({ "range", "make", "n", "chance", "each", "c1", "c2", "right", "sells", "left", "time" }) do
+    if type(row[k]) == "string" and row[k] ~= "" then row[k] = DIM .. UI.plainText(row[k]) .. "|r" end
+  end
+  row.done = true
+  return row
+end
+
 -- The dearest unit price buying `qty` of an item still needs ("pay up to"): the last price step the quantity
 -- reaches, or the vendor's price once the listings are used up. nil when it has no price.
 local function payUpTo(ctx, item, qty)
@@ -84,6 +111,7 @@ local function payUpTo(ctx, item, qty)
   if got < qty - 1e-9 and sup.after ~= nil then top = sup.after end
   return top
 end
+NS.payUpTo = payUpTo
 
 -- Where a recipe is learned: the first trainer or vendor with a known place, else the first (as the line menu's
 -- "Pin on map" picks it). Returns the target, "trainer" | "vendor", and "Name, Zone".
@@ -148,13 +176,20 @@ end
 
 -- What to buy, what to make and what you said you have, for a whole route (lv "whole": the choice is a dropdown
 -- in the last cell) or for one step (lv "step": the pane has the choices in a block of their own).
-local function shopRows(out, ctx, shop, lv)
+-- fz: the list is a started plan's, as it was saved: its prices and ways are the saved ones and it has no choices.
+local function shopRows(out, ctx, shop, lv, fz)
   local S = settings()
   local whole = lv == "whole"
+  local function pickControl(item, text)   -- (shadows the file's: a started plan's lines have no dropdown)
+    if fz then return nil end
+    return { kind = "dropdown", text = text, tip = PICK_TIP, items = function() return NS.rowMenu({ pickItem = item }) end }
+  end
   for _, b in ipairs(shop.buy) do
     local qty = ceil(b.qty - 1e-9)
     local have = bagCount(b.item)
-    local top = payUpTo(ctx, b.item, b.qty)
+    local top = b.top
+    if top == nil then top = payUpTo(ctx, b.item, b.qty) end
+    top = top or nil
     local left = "   " .. qty .. "x " .. itemText(b.item)
     if have > 0 then left = left .. DIM .. "  have " .. have .. (have >= qty and ", enough" or (", buy " .. (qty - have))) .. "|r" end
     local flag = ""
@@ -168,6 +203,7 @@ local function shopRows(out, ctx, shop, lv)
     tip[#tip + 1] = "Click at the auction house to search for it. Shift-click to link it."
     tip[#tip + 1] = GOLD .. "Right-click for choices|r: Have it, if you have it already (farmed or banked). It then costs nothing and is not bought, however many the route uses."
     local text = pickText(S, b.item, b.how, b.part)
+    if fz then text = (b.how == "Vendor" and "vendor") or (b.part and "buy") or "AH" end
     out[#out + 1] = { lv = lv, name = itemText(b.item) .. flag, left = left .. flag, need = tostring(qty), bags = have > 0 and tostring(have) or "",
       c1 = top and money(top) or "", c2 = b.cost and money(b.cost) or (RED .. "no price|r"),
       right = whole and text or nil, control = whole and pickControl(b.item, text) or nil,
@@ -176,7 +212,7 @@ local function shopRows(out, ctx, shop, lv)
   for _, m in ipairs(shop.made) do
     local qty = ceil(m.qty - 1e-9)
     local have = bagCount(m.item)
-    local text = pickText(S, m.item, "Craft", true)
+    local text = fz and "make" or pickText(S, m.item, "Craft", true)
     out[#out + 1] = { lv = lv, name = DIM .. "make|r " .. itemText(m.item), left = "   " .. DIM .. "make|r " .. qty .. "x " .. itemText(m.item),
       need = tostring(qty), bags = have > 0 and tostring(have) or "", c2 = DIM .. "part|r",
       right = whole and text or nil, control = whole and pickControl(m.item, text) or nil,
@@ -379,24 +415,28 @@ end
 -- ---- the model -------------------------------------------------------------------------------------------------------
 
 local function selectStep(g)
-  sel.id, sel.from = g.r and g.r.id or false, g.from
+  sel.id, sel.from, sel.follow = g.r and g.r.id or false, g.from, false
   paneMode = "step"
   settings().detailOff = nil   -- a click on a step shows it
   NS.refresh()
 end
 
-local function stepAction(g)
-  return function()
+local function stepAction(g, i)
+  return function(button)
     if type(IsShiftKeyDown) == "function" and IsShiftKeyDown() and g.r then
       NS.linkRow({ recipe = g.r.id, item = g.r.made > 0 and g.r.made or nil })
       return
     end
+    -- a click on the step whose details are showing closes them (the selection stays, and a started plan still
+    -- follows the step you are in); with the pane closed, or on another step, it selects and shows
+    if NS.detailClick(paneMode == "step" and shownStep ~= nil and shownStep.i == i, button) then return end
     selectStep(g)
   end
 end
 
 -- Which step is the selected one: the same recipe at the same start, else the same recipe, else the first step.
-local function pickStep(segs)
+local function pickStep(segs, here)
+  if here and sel.follow and segs[here] then return here end   -- a started plan nobody clicked in: the step you are in
   local same, first
   for i, g in ipairs(segs) do
     local id = g.r and g.r.id or false
@@ -418,9 +458,13 @@ local function addStepToShopping()
   end
   -- a step of parts made ahead is marked: the Shopping list then counts its crafts once, not once here and once
   -- more under the steps that use the parts
-  local ok, err = NS.shopAdd({ kind = "step", prof = s.prof, id = s.r.id, n = s.n, from = s.g.from, to = s.g.to, stock = s.g.stock and true or nil })
+  -- Buy for bad luck (Route settings): the count that covers bad luck 9 times out of 10, and the notice says so
+  local n, note = s.n, ""
+  local buf = (settings().routeSafe == true and NS.stepBuffer and s.ctx) and NS.stepBuffer(s.ctx, s.g) or nil
+  if buf and buf.safe > n then n, note = buf.safe, " Enough for bad luck: " .. buf.safe .. " crafts, where " .. s.n .. " are expected." end
+  local ok, err = NS.shopAdd({ kind = "step", prof = s.prof, id = s.r.id, n = n, from = s.g.from, to = s.g.to, stock = s.g.stock and true or nil })
   if ok then
-    NS.notice(s.n .. "x " .. s.r.name .. " (" .. s.g.from .. "-" .. s.g.to .. ") is on the Shopping list.", "info")
+    NS.notice(n .. "x " .. s.r.name .. " (" .. s.g.from .. "-" .. s.g.to .. ") is on the Shopping list." .. note, "info")
   else
     NS.notice("Not added: " .. tostring(err))
   end
@@ -431,6 +475,18 @@ local function addRouteToShopping()
   if not (cur and cur.route) then return end
   if not NS.shopAdd then
     NS.notice("The Shopping list is not loaded.")
+    return
+  end
+  -- A started plan goes on as its own steps (what is left of them), and so does any route with Buy for bad luck
+  -- on: the Shopping list's "route" entry plans by itself and would follow neither.
+  if (cur.started or settings().routeSafe == true) and NS.addPlanToShopping then
+    local n, safe = NS.addPlanToShopping()
+    if n > 0 then
+      NS.notice((cur.started and "What is left of the started " or "The ") .. cur.prof .. (cur.started and " plan" or " route") .. " is on the Shopping list: " .. n .. (n == 1 and " step" or " steps")
+        .. (safe and ", with enough for bad luck 9 times out of 10." or "."), "info")
+    else
+      NS.notice("Not added: no step is left to make.")
+    end
     return
   end
   local ok, err = NS.shopAdd({ kind = "route", prof = cur.prof, from = cur.from, to = cur.to })
@@ -446,11 +502,15 @@ local function scanPlan()
   if cur then NS.scanButton(string.lower(cur.prof)) end
 end
 
--- The pane's lines for the selected step: its figures, what to learn first and where, what to buy, its choices.
+-- The pane's lines for the selected step: its figures, what to learn first and where, what to buy, its choices,
+-- the other recipes that could do its range.
 -- rec = { i, g, need = { { r, text, cost, li, part, tip } }, ranks = { skill, ... }, cause (a range with no recipe) }
-local function stepRows(out, ctx, st, prof, rec, route)
+-- P, prog: the started plan and where it stands (nil for a plan that is not started). The step of a started plan
+-- shows the figures and the buy list it was saved with (g.rec) and has no choices.
+local function stepRows(out, ctx, st, prof, rec, route, P, prog)
   local S = settings()
   local g, r = rec.g, rec.g.r
+  local sv = g.rec
   local function add(row)
     row.lv = "step"
     out[#out + 1] = row
@@ -466,26 +526,61 @@ local function stepRows(out, ctx, st, prof, rec, route)
   end
   local n = g.all or g.crafts
   local x = ctx.info(r)
+  local secs, casts, way = x.secs, x.casts, x.way
+  if sv then secs, casts, way = tonumber(sv.secs) or secs, tonumber(sv.casts) or casts, sv.way end
+  local buf = NS.stepBuffer and NS.stepBuffer(ctx, g) or nil
+  local unsure = buf ~= nil and buf.safe > g.crafts
   add({ left = GOLD .. "Selected step|r  " .. g.from .. "-" .. g.to .. "  " .. n .. "x " .. r.name, section = "step", stepHead = true, action = function() end,
     recipe = r.id, item = r.made > 0 and r.made or nil })
+  -- where a started plan stands in this step
+  if prog and prog.step == rec.i then
+    add({ left = GOLD .. (prog.manual and "At skill " or "You are at ") .. prog.skill .. "|r",
+      c2 = prog.left and ("about " .. prog.left .. " more" .. ((prog.safeLeft or 0) > prog.left and (DIM .. ", up to " .. prog.safeLeft .. "|r") or "")) or "", nowLine = true,
+      tip = { "Crafts still expected from your skill to the end of this step, from the chance at each level that is left.",
+        (prog.safeLeft or 0) > (prog.left or 0) and ("Up to " .. prog.safeLeft .. " if unlucky: enough 9 times out of 10.") or nil } })
+  elseif prog and (prog.finished or rec.i < (prog.step or 0)) then
+    add({ left = DIM .. "Done: your skill is past this step.|r", done = true })
+  end
+  if sv and sv.own then
+    local was = type(sv.orig) == "table" and data().byId[sv.orig.id or 0] or nil
+    add({ left = GOLD .. "*|r Your choice" .. (was and (", instead of " .. was.name) or ""), c2 = "Undo", own = true,
+      control = { kind = "button", text = "Undo", w = 60, func = function() NS.undoStep(rec.i) end,
+        tip = { "Undo", "Puts the planned recipe back into this step." .. (was and (" (" .. was.name .. ")") or "") } },
+      tip = { "You chose this recipe with Use instead. Every other step is as it was planned." } })
+  elseif sv and sv.rest then
+    add({ left = DIM .. "What is left of this step after your choice above it.|r", c2 = "Undo", rest = true,
+      control = { kind = "button", text = "Undo", w = 60, func = function() NS.undoStep(rec.i) end, tip = { "Undo", "Puts the planned recipe back for the whole range." } } })
+  end
   add({ left = "Skill", c2 = g.from .. " to " .. g.to .. DIM .. " (" .. (g.to - g.from) .. (g.to - g.from == 1 and " point)|r" or " points)|r") })
   add({ left = "Crafts", c2 = n .. DIM .. string.format(" (%.1f on average)|r", g.exp),
     tip = { string.format("%.1f crafts on average for these %d points, so %d. Luck will vary.", g.exp, g.to - g.from, g.crafts) } })
-  add({ left = "Chance of a point", c2 = chanceRange(g), tip = { "At the step's first level and at its last. It is worked out level by level (hover the step in the list)." } })
-  add({ left = "Casting", c2 = dur(x.secs) .. " each" .. ((not g.stock) and (", " .. dur(g.time) .. " in all") or ""),
-    tip = { "One craft" .. ((x.casts and x.casts > 1.0001) and string.format(" is %.1f casts with the parts you make for it", x.casts) or "") .. ". Casting only: no travel, no buying." } })
+  if unsure then
+    add({ left = "Crafts to be safe", c2 = buf.safe .. DIM .. " (bad luck, 9 in 10)|r", safe = buf.safe,
+      tip = { "x" .. g.crafts .. ", up to " .. buf.safe .. " if unlucky.",
+        "A craft that is not orange gives a point only some of the time, so " .. g.crafts .. " is an average. " .. buf.safe .. " crafts are enough 9 times out of 10.",
+        DIM .. "Worked out from the chance at every level of the step, parts made for it and Working Overtime included.|r" } })
+  end
+  add({ left = "Chance of a point", c2 = chanceWords(g), tip = { "At the step's first level and at its last. It is worked out level by level (hover the step in the list)." } })
+  add({ left = "Casting", c2 = dur(secs) .. " each" .. ((not g.stock) and (", " .. dur(g.time) .. " in all") or ""),
+    tip = { "One craft" .. ((casts and casts > 1.0001) and string.format(" is %.1f casts with the parts you make for it", casts) or "") .. ". Casting only: no travel, no buying." } })
+  local sales = S.sales
+  if P and type(P.set) == "table" and P.set.sales then sales = P.set.sales end
   if g.stock then
     add({ left = "Cost", c2 = DIM .. "in later steps|r", tip = { "These are parts the later steps need anyway. Their materials and casting time are counted in the steps that use them." } })
   else
     add({ left = "Materials", c2 = money(g.cost) .. DIM .. " (" .. money(g.cost / g.crafts) .. " each)|r",
-      tip = { "This step's crafts, priced one after another down the listings as the route was planned." } })
-    if S.sales ~= "off" then
-      local way = NS.wayLong(x.way)
-      local each = x.way == "AH" and x.ahp or (x.way == "DE" and x.drev and x.drev / ctx.makes(r)) or r.sell
-      add({ left = "Sells at", c2 = way and (way .. (each and (", " .. money(each) .. " each") or "")) or (DIM .. "not counted|r"),
-        tip = { "Where this product is counted as sold. Change it under Choices below." } })
+      tip = { sv and "This step's crafts, as they were priced when the plan was started." or "This step's crafts, priced one after another down the listings as the route was planned." } })
+    if sales ~= "off" then
+      local wayText = NS.wayLong(way)
+      local each = (not sv or way == x.way) and (way == "AH" and x.ahp or (way == "DE" and x.drev and x.drev / ctx.makes(r)) or r.sell) or nil
+      add({ left = "Sells at", c2 = wayText and (wayText .. (each and (", " .. money(each) .. " each") or "")) or (DIM .. "not counted|r"),
+        tip = { "Where this product is counted as sold." .. (P and "" or " Change it under Choices below.") } })
       add({ left = "After sales", c2 = g.net < 0 and (GREEN .. "+" .. money(-g.net) .. "|r") or money(g.net),
         tip = { "The step's materials less what its crafts sell for. A green + is a gain." } })
+    end
+    if g.over then
+      add({ left = RED .. "Above your limit for one point|r", c2 = money(g.net / max(1, g.to - g.from)) .. " a point", over = true,
+        tip = { "No recipe at or under the most you will pay for one skill point gives a point here, so this one is used.", "The limit is in Route settings." } })
     end
   end
 
@@ -497,7 +592,7 @@ local function stepRows(out, ctx, st, prof, rec, route)
     add({ left = GOLD .. "Learn first|r", c2 = sum > 0 and (GOLD .. money(sum) .. "|r") or "", band = true })
     for _, e in ipairs(rec.need) do
       local lr = e.r
-      add({ left = "   " .. lr.name .. (e.part and (DIM .. " (for a part)|r") or ""),
+      add({ left = "   " .. lr.name .. (e.part and (DIM .. " (for a part)|r") or "") .. (e.known and (GREEN .. "  learned|r") or ""),
         c2 = e.li.unknown and (RED .. "?|r") or (e.cost and money(e.cost) or (DIM .. "free|r")),
         item = lr.pat > 0 and lr.pat or nil, recipe = lr.id, tip = e.tip })
       add({ left = DIM .. "      " .. e.text .. "|r", tip = e.tip })
@@ -515,29 +610,67 @@ local function stepRows(out, ctx, st, prof, rec, route)
   end
 
   -- what to buy for it
-  local shop = ctx.shopping({ { r = r, crafts = n, stock = g.stock } }, true)
+  local shop = (sv and type(sv.shop) == "table") and NS.unpackShop(sv.shop) or ctx.shopping({ { r = r, crafts = n, stock = g.stock } }, true)
   add({ left = "" })
   add({ left = GOLD .. "Buy for this step|r", need = DIM .. "need|r", bags = DIM .. "bags|r", c1 = DIM .. "pay up to|r", c2 = DIM .. "cost|r", band = true })
-  shopRows(out, ctx, shop, "step")
+  shopRows(out, ctx, shop, "step", sv ~= nil)
   add({ left = "   Total", c2 = GOLD .. money(shop.cost) .. "|r",
-    tip = { "This step bought on its own. Inside the route it can cost more: earlier steps may have bought the cheapest listings of the same materials." } })
+    tip = { sv and "This step bought on its own, as it was priced when the plan was started."
+      or "This step bought on its own. Inside the route it can cost more: earlier steps may have bought the cheapest listings of the same materials." } })
+  if unsure then
+    add({ left = "   To be safe: " .. buf.safe .. " crafts, " .. (buf.safe - g.crafts) .. " more", c2 = buf.extra and ("+ " .. money(buf.extra)) or (RED .. "not all listed|r"), safeRow = true,
+      tip = { "The materials of the " .. (buf.safe - g.crafts) .. " crafts between the average and the count that covers bad luck 9 times out of 10.",
+        "Buy for bad luck in Route settings makes Add step to shopping add them." } })
+  end
 
-  -- its choices, as dropdowns
+  -- its choices, as dropdowns (a started plan has none: it does not change)
   add({ left = "" })
   add({ left = GOLD .. "Choices|r", band = true })
-  if S.sales ~= "off" and r.made > 0 and not g.stock then
-    local text = sellText(S, r, x)
-    add({ left = "   Sell " .. itemText(r.made, r.name), c2 = text, control = sellControl(r.made, text), item = r.made, sellItem = r.made, choice = true, tip = SELL_TIP })
+  if P then
+    add({ left = DIM .. "   Fixed while the plan is started. Plan again to change them.|r" })
+  else
+    if S.sales ~= "off" and r.made > 0 and not g.stock then
+      local text = sellText(S, r, x)
+      add({ left = "   Sell " .. itemText(r.made, r.name), c2 = text, control = sellControl(r.made, text), item = r.made, sellItem = r.made, choice = true, tip = SELL_TIP })
+    end
+    local function pick(item, how, part)
+      local text = pickText(S, item, how, part)
+      add({ left = "   " .. itemText(item), c2 = text, control = pickControl(item, text), item = item, pickItem = item, choice = true, tip = PICK_TIP })
+    end
+    for _, m in ipairs(shop.made) do pick(m.item, "Craft", true) end
+    for _, b in ipairs(shop.buy) do pick(b.item, b.how, b.part) end
+    for _, h in ipairs(shop.have or {}) do pick(h.item, "Have", h.part) end
+    local skip = skipControl(r.id)
+    add({ left = "   This recipe in routes", c2 = skip.text, control = skip, skipRecipe = r.id, tip = skip.tip })
   end
-  local function pick(item, how, part)
-    local text = pickText(S, item, how, part)
-    add({ left = "   " .. itemText(item), c2 = text, control = pickControl(item, text), item = item, pickItem = item, choice = true, tip = PICK_TIP })
+
+  -- the other recipes that give points here
+  if NS.stepAlternates and not g.stock then
+    local alts = NS.stepAlternates(ctx, st, prof, route, g)
+    add({ left = "" })
+    add({ left = GOLD .. "Other recipes for this range|r", need = DIM .. "crafts|r", c1 = DIM .. "after sales|r", band = true, altHead = true,
+      tip = { "The next best recipes that give points from " .. g.from .. ", each priced on its own at today's listings, against this step's recipe priced the same way.",
+        "Use instead puts one in this step's place and leaves every other step alone." } })
+    if #alts == 0 then add({ left = DIM .. "   No other recipe you can get gives points here.|r" }) end
+    for _, a in ipairs(alts) do
+      local line, why = NS.altLine(a)
+      local tip = { a.r.name .. ", " .. a.from .. " to " .. a.to,
+        a.crafts .. " crafts, materials " .. money(a.cost) .. ", after sales " .. (a.net < 0 and "+" or "") .. money(a.net) .. ", casting " .. dur(a.time) .. "." }
+      if a.dNet and a.dTime then tip[#tip + 1] = "Against " .. r.name .. " over the same levels: " .. (line:match("^(.-) \194\183") or "the same") .. "." end
+      tip[#tip + 1] = "Not chosen: " .. why .. "."
+      tip[#tip + 1] = a.can and (P and "Use instead: this step only; every other step stays." or "Use instead starts the plan first: a plan that is not started would be planned again and lose the choice.")
+        or "Undo your choice for this step before choosing another."
+      add({ name = "   " .. COLOUR[ctx.colour(a.r, g.from)] .. a.r.name .. "|r", left = "   " .. a.r.name, need = tostring(a.crafts),
+        c1 = a.net < 0 and (GREEN .. "+" .. money(-a.net) .. "|r") or money(a.net), c2 = a.can and "Use instead" or "", alt = a, item = a.r.made > 0 and a.r.made or nil, action = function() end,
+        control = a.can and { kind = "button", text = "Use instead", w = 84, func = function()
+          local ok, err = NS.useInstead(a.r.id)
+          if not ok and err then NS.notice(err) end
+        end, tip = { "Use instead", tip[#tip] } } or nil,
+        tip = tip })
+      add({ left = DIM .. "      " .. line .. "|r", altNote = true, action = function() end, tip = tip })
+      add({ left = DIM .. "      " .. why .. "|r", altNote = true, action = function() end, tip = tip })
+    end
   end
-  for _, m in ipairs(shop.made) do pick(m.item, "Craft", true) end
-  for _, b in ipairs(shop.buy) do pick(b.item, b.how, b.part) end
-  for _, h in ipairs(shop.have or {}) do pick(h.item, "Have", h.part) end
-  local skip = skipControl(r.id)
-  add({ left = "   This recipe in routes", c2 = skip.text, control = skip, skipRecipe = r.id, tip = skip.tip })
 
   -- its actions: the pane's buttons
   add({ left = "Add step to shopping", button = true, action = addStepToShopping })
@@ -558,7 +691,11 @@ local function buildRoute()
   S.prof = prof
   local st = profState(prof)
   local from, to, manual = rangeOf(prof, st)
-  local title = string.format("%s  %d > %d", prof, from, to)
+  -- A started plan (LedgerRoute.lua): the route as it was saved. Nothing below plans it again; the skill only says
+  -- how far it is.
+  local P = NS.startedPlan and NS.startedPlan(prof) or nil
+  local prog = P and NS.planProgress(P, st) or nil
+  local title = P and string.format("%s  %d > %d  (started)", prof, P.from, P.to) or string.format("%s  %d > %d", prof, from, to)
   shownStep = nil
 
   if st.skill then
@@ -595,15 +732,21 @@ local function buildRoute()
   -- Planning is the slow part, so the route is kept until something it depends on changes: range, cap, recipes
   -- known, settings, a finished scan or a newly seen vendor. Bag changes only redo the cheap lines below.
   local sig = NS.sigOf(prof, st, from, to)
-  local kept = current and current.sig == sig and current or nil
+  local kept = current and current.sig == sig and not current.started and current or nil
   -- One context for the route, the Craft page, the details pane and the profession window's block: planBest leaves it set to the paid recipes
   -- the route declined, so a part reads "bought" or "made" the same way everywhere.
   local ctx = kept and kept.ctx or NS.contextFor(prof, st, from, to, sig)
 
-  if from >= to then
+  if P then
+    for _, row in ipairs(NS.planBanner(P, prof, st, prog, sig)) do out[#out + 1] = row end
+  elseif NS.routeText then
+    out[#out + 1] = { lv = "sum", left = DIM .. "Route settings: " .. NS.routeText() .. ".|r" }
+  end
+
+  if not P and from >= to then
     NS.setCurrent({ prof = prof, ctx = ctx, st = st, sig = sig, from = from, to = to })
     local atCap = st.max == from and not manual
-    local text = atCap and ("You are at " .. from .. ", your cap. Train the next rank to go on.") or "Nothing to plan: the target is not above the start."
+    local text = atCap and ("You are at " .. from .. ", your cap. " .. (from >= 300 and "There is no rank above it." or "Train the next rank to go on.")) or "Nothing to plan: the target is not above the start."
     out[#out + 1] = { lv = "all", status = "range", level = 1, left = text,
       empty = { icon = BOOK, title = atCap and "At your cap" or "Nothing to plan", text = text } }
     return out, title
@@ -611,12 +754,24 @@ local function buildRoute()
 
   -- planBest: parts made ahead, and a recipe that costs something to learn only when the route is better with it
   local vendorSeen = select(2, vendorPrices())   -- recipe items whose price was seen at a vendor in game
-  local route = kept and kept.route or ctx.planBest(prof, from, to)
-  NS.setCurrent({ prof = prof, ctx = ctx, route = route, st = st, sig = sig, from = from, to = to })
+  local route
+  if P then
+    route = NS.startedRoute(prof)
+    NS.planBan(ctx, P)   -- parts read as the plan had them
+  else
+    route = kept and kept.route or ctx.planBest(prof, from, to)
+  end
+  -- from / to here stay the plan bar's values (its boxes show them); route.from / route.to are the route's own
+  local cur = { prof = prof, ctx = ctx, route = route, st = st, sig = sig, from = from, to = to, started = P }
+  NS.setCurrent(cur)
+  if not P and NS.routeSeed then NS.routeSeed(cur) end
+  if P then from, to = P.from, P.to end   -- from here on: the range of the route shown
+  local salesMode = S.sales   -- what the route was planned with: a started plan keeps its own
+  if P and type(P.set) == "table" and P.set.sales then salesMode = P.set.sales end
   local tot = route.tot
   local learn = tot.learn or 0
   local function netText(v)
-    if S.sales == "off" then return "" end
+    if salesMode == "off" then return "" end
     return v < 0 and (GREEN .. "+" .. money(-v) .. "|r") or money(v)
   end
 
@@ -636,9 +791,17 @@ local function buildRoute()
     for _, b in ipairs(ranks) do
       if b >= g.from and b < g.to then rec.ranks[#rec.ranks + 1] = b end
     end
-    local act = stepAction(g)
+    local act = stepAction(g, i)
+    local behind = prog ~= nil and (prog.finished or g.to <= prog.skill)   -- a started plan: this step is done
     if not g.r then
-      local cause = gapCause(ctx, prof, st, g.from, g.to)
+      local cause
+      if g.rec then   -- a started plan: why it had no recipe then
+        local c = type(g.rec.cause) == "table" and g.rec.cause or {}
+        cause = { text = g.lost and "The recipe of this step is no longer in Kebold's data." or tostring(c.text or "No recipe gave points here when the plan was started."),
+          lines = type(c.lines) == "table" and c.lines or {}, fix = nil }
+      else
+        cause = gapCause(ctx, prof, st, g.from, g.to)
+      end
       rec.cause = cause
       gaps[#gaps + 1] = { g = g, cause = cause }
       local tip = { "No recipe the plan may use, with all its materials priced, gives skill in this range." }
@@ -646,14 +809,38 @@ local function buildRoute()
       tip[#tip + 1] = "Click for what would help."
       steps[#steps + 1] = { lv = "steps", step = i, gap = true, action = act, tip = tip,
         left = RED .. string.format("%d-%d  no usable recipe gives points here|r", g.from, g.to) .. "  " .. DIM .. cause.text .. "|r" }
+      if behind then dimRow(steps[#steps]) end
     else
       local r = g.r
       firstStep = firstStep or g
       -- what has to be learned before this step: its own recipe, and paid recipes for parts it makes
       local need, stepLearn = {}, 0
-      if not (st.known and st.known[r.id]) then need[#need + 1] = r end
-      for _, e in ipairs(g.learn or {}) do
-        if e.r ~= r then need[#need + 1] = e.r end
+      if not g.rec then
+        if not (st.known and st.known[r.id]) then need[#need + 1] = r end
+        for _, e in ipairs(g.learn or {}) do
+          if e.r ~= r then need[#need + 1] = e.r end
+        end
+      else   -- a started plan: what it had to learn then, as it was saved; one learned since says so
+        for _, sl in ipairs(type(g.rec.learn) == "table" and g.rec.learn or {}) do
+          local lr = type(sl) == "table" and data().byId[sl.id or 0] or nil
+          if lr and not learnShown[lr] then
+            learnShown[lr] = true
+            local cost = tonumber(sl.cost)
+            local known = st.known ~= nil and st.known[lr.id] == true
+            toLearn = toLearn + 1
+            if sl.unk then unknownLearn = unknownLearn + 1 end
+            if cost then stepLearn = stepLearn + cost end
+            local tip = { known and "You have learned this recipe." or "A recipe to learn.",
+              cost and ("+ " .. money(cost) .. " to learn it, as it was priced when the plan was started. It is in To learn, once.")
+                or (sl.unk and (RED .. "What it costs was not known: nothing is counted for it.|r") or "Learning it costs nothing that is known.") }
+            if NS.whereLines then
+              for _, line in ipairs(NS.whereLines(lr)) do tip[#tip + 1] = line end
+            end
+            local e = { r = lr, text = tostring(sl.text or ""), cost = cost, li = { unknown = sl.unk == true }, at = g.from, part = sl.part == true, known = known, tip = tip }
+            learnList[#learnList + 1] = e
+            rec.need[#rec.need + 1] = e
+          end
+        end
       end
       for _, lr in ipairs(need) do
         if not learnShown[lr] then
@@ -731,11 +918,17 @@ local function buildRoute()
         end
         if x.cost and x.p then tip[#tip + 1] = "One craft: materials " .. money(x.cost) .. ", sells for " .. money(x.cost + x.p) .. " (" .. mk .. " made)." end
       end
-      if S.sales ~= "off" and r.made > 0 then
+      if S.sales ~= "off" and r.made > 0 and not g.rec then
         tip[#tip + 1] = "Sells at: " .. SELL_TEXT[S.sellPick[r.made] or "auto"] .. (S.sellPick[r.made] and " (your choice)" or "") .. "."
       end
+      local secs = x.secs
+      if g.rec then   -- a started plan: where it was counted as sold and how long a craft took then
+        secs = tonumber(g.rec.secs) or secs
+        sells = salesMode ~= "off" and ((g.rec.way == "AH" and "AH") or (g.rec.way == "Vendor" and "vendor") or (g.rec.way == "DE" and "disenchant")) or ""
+        table.insert(tip, 1, DIM .. "The step's figures are the started plan's; the prices below are today's.|r")
+      end
       if stepLearn > 0 then tip[#tip + 1] = GOLD .. "+ " .. money(stepLearn) .. " to learn|r before this step (the line under it). It is in To learn, not in this step's figures." end
-      tip[#tip + 1] = "Time: " .. dur(x.secs) .. " for one craft" .. ((x.casts and x.casts > 1.0001) and string.format(" (%.1f casts with the parts you make for it)", x.casts) or "")
+      tip[#tip + 1] = "Time: " .. dur(secs) .. " for one craft" .. ((x.casts and x.casts > 1.0001) and string.format(" (%.1f casts with the parts you make for it)", x.casts) or "")
         .. ", " .. dur(g.time) .. " for the step. Casting only: no travel, no buying."
       tip[#tip + 1] = "Click for this step's details: what to buy, what to learn, its choices. Shift-click to link it."
       tip[#tip + 1] = GOLD .. "Right-click for choices.|r"
@@ -746,13 +939,16 @@ local function buildRoute()
         -- the same step as one line of text, for /kebold print
         left = string.format("%d-%d  %s%dx %s|r", g.from, g.to, col, g.crafts, r.name),
         c1 = chanceRange(g) .. "  " .. money(g.cost / g.crafts) .. " each",
-        time = dur(x.secs) .. " / " .. dur(g.time),   -- one craft with the parts made for it / the whole step
+        time = dur(secs) .. " / " .. dur(g.time),   -- one craft with the parts made for it / the whole step
         item = r.made > 0 and r.made or nil, recipe = r.id, tip = tip,
-        sellStep = (S.sales ~= "off" and r.made > 0) and r.made or nil }
+        sellStep = (S.sales ~= "off" and r.made > 0 and not P) and r.made or nil }
       steps[#steps + 1] = row
       if g.stock then   -- parts for later steps, made now while they still give skill
-        local all = ceil((route.need and route.need[r] or 0) / ctx.makes(r) - 1e-6)
-        g.all = max(all, g.crafts)
+        if not g.rec then   -- (a started plan saved the number)
+          local all = ceil((route.need and route.need[r] or 0) / ctx.makes(r) - 1e-6)
+          g.all = max(all, g.crafts)
+        end
+        g.all = g.all or g.crafts
         row.n = tostring(g.all)
         row.make = col .. r.name .. "|r" .. GOLD .. "  parts for later|r"
         row.left = string.format("%d-%d  %s%dx %s|r", g.from, g.to, col, g.all, r.name) .. GOLD .. "  parts for later steps|r"
@@ -763,23 +959,61 @@ local function buildRoute()
           "Their materials and casting time are counted in the steps that use them, so this line shows no cost.",
           "Click for this step's details. Shift-click to link it.", GOLD .. "Right-click for choices.|r" }
       end
+      -- a count for bad luck: the Crafts cell ends in ~ (an estimate) and the tooltip has both counts
+      local buf = NS.stepBuffer and NS.stepBuffer(ctx, g) or nil
+      if buf and buf.safe > g.crafts then
+        row.safe = buf.safe
+        row.n = row.n .. DIM .. "~|r"
+        table.insert(row.tip, 2, "x" .. g.crafts .. ", up to " .. buf.safe .. " if unlucky: enough 9 times out of 10."
+          .. (buf.extra and (" The extra materials would cost about " .. money(buf.extra) .. ".") or ""))
+      end
+      if g.over then   -- above the most one skill point may cost (Route settings), used because nothing else gives a point
+        row.over = true
+        row.make = row.make .. RED .. "  over your limit|r"
+        row.left = row.left .. RED .. "  over your limit for one point|r"
+        table.insert(row.tip, 2, RED .. "Above the most you will pay for one skill point|r (" .. money(g.net / max(1, g.to - g.from)) .. " a point): no cheaper recipe gives a point here.")
+      end
+      if g.rec and (g.rec.own or g.rec.rest) then   -- your own choice (Use instead), or what it left of the planned step
+        row.own = g.rec.own and true or nil
+        if g.rec.own then
+          row.make = row.make .. GOLD .. " *|r"
+          row.left = row.left .. GOLD .. " *|r"
+          table.insert(row.tip, 2, GOLD .. "* Your choice|r, in place of the recipe the plan had here. The step's details have Undo.")
+        end
+      end
+      if behind then
+        dimRow(row)
+      elseif prog and prog.step == i then
+        row.now = true
+      end
       -- its second lines: what to learn before it
       for _, e in ipairs(rec.need) do
         local lr = e.r
         steps[#steps + 1] = { lv = "steps", step = i, sub = true, learnStep = true, learnCost = e.cost, action = act, menu = true,
           left = "      " .. GOLD .. "learn|r first: " .. lr.name .. (e.part and (DIM .. " (makes a part for this step)|r") or "") .. DIM .. ": " .. e.text .. "|r"
-            .. (e.li.unknown and (RED .. "  + ? to learn|r") or (e.cost and (GOLD .. "  + " .. money(e.cost) .. " to learn|r") or "")),
+            .. (e.known and (GREEN .. "  learned|r") or (e.li.unknown and (RED .. "  + ? to learn|r") or (e.cost and (GOLD .. "  + " .. money(e.cost) .. " to learn|r") or ""))),
           recipe = lr.id, tip = e.tip }
+        if behind then dimRow(steps[#steps]) end
+      end
+      if prog and prog.step == i and not prog.finished then   -- where you are in it
+        steps[#steps + 1] = { lv = "steps", step = i, sub = true, nowLine = true, action = act,
+          left = "      " .. GOLD .. "you are here|r: skill " .. prog.skill .. (prog.left and (", about " .. prog.left .. " more " .. (prog.left == 1 and "craft" or "crafts") .. " to " .. g.to
+            .. (((prog.safeLeft or 0) > prog.left) and (DIM .. " (up to " .. prog.safeLeft .. " if unlucky)|r") or "")) or ""),
+          tip = { "Crafts still expected from your skill to the end of this step, from the chance at each level that is left.",
+            "This only marks progress: the plan itself does not change." } }
       end
     end
     for _, b in ipairs(rec.ranks) do
       steps[#steps + 1] = { lv = "steps", step = i, sub = true, rank = b, action = act,
         left = GOLD .. "      At " .. b .. ": train the next rank at a trainer|r" .. (b == g.from and " before this step." or " to go on."),
         tip = { "Your skill stops at " .. b .. " until a trainer teaches the next rank." } }
+      if behind then dimRow(steps[#steps]) end
     end
   end
 
-  local whole = firstStep and ctx.shopping(route.segs) or nil
+  -- the whole route's buy list: a started plan's is the one it was saved with
+  local whole = firstStep and ((P and NS.unpackShop(P.shop)) or ctx.shopping(route.segs)) or nil
+  cur.recs, cur.whole, cur.ranks = recs, whole, ranks   -- what Start this plan saves (LedgerRoute.lua)
 
   -- the six figures, and how they relate
   do
@@ -802,6 +1036,12 @@ local function buildRoute()
       elseif whole then
         tip[#tip + 1] = "The Whole route buy list adds up to the same."
       end
+      -- what buying for bad luck would add (the totals themselves stay on the average counts)
+      local add = (firstStep and NS.routeBuffer) and NS.routeBuffer(ctx, route) or nil
+      if add and add.steps > 0 then
+        tip[#tip + 1] = add.steps .. (add.steps == 1 and " step has" or " steps have") .. " a chance of a point below 100% (marked ~). Buying enough for bad luck 9 times out of 10 on "
+          .. (add.steps == 1 and "it" or "all of them") .. " would add about " .. money(add.extra) .. (add.unknown > 0 and (", and more for " .. add.unknown .. " whose extra materials are not all listed") or "") .. "."
+      end
       sum("mats", "Materials", money(tot.cost), tip)
     end
     do
@@ -819,7 +1059,7 @@ local function buildRoute()
       if unknownLearn > 0 then value = (learn > 0 and (money(learn) .. " ") or "") .. RED .. "+ ?|r" end
       sum("learn", "To learn", value .. (toLearn > 0 and (DIM .. "  (" .. toLearn .. ")|r") or ""), tip)
     end
-    if S.sales ~= "off" then
+    if salesMode ~= "off" then
       sum("net", "After sales", netText(tot.net + learn),
         { "Materials " .. money(tot.cost) .. (learn > 0 and (" + learning recipes " .. money(learn)) or "") .. " - what the crafts sell for " .. money(sales) .. ".",
           "A green + is a gain; without it this is what the route costs you in the end.",
@@ -862,7 +1102,7 @@ local function buildRoute()
   -- anymore"). The same lines as the Whole route view's buy list, in the steps' columns; the choices stay there.
   do
     local need = {}
-    shopRows(need, ctx, whole, "steps")
+    shopRows(need, ctx, whole, "steps", P ~= nil)
     if #need > 0 then
       out[#out + 1] = { lv = "steps", left = "" }
       out[#out + 1] = { lv = "steps", range = "", make = GOLD .. "Materials for the whole route|r  " .. DIM .. from .. " to " .. to .. "|r",
@@ -883,9 +1123,14 @@ local function buildRoute()
       "Recipes to learn (" .. (learn > 0 and money(learn) or "nothing") .. ") are in their own section below, not in this figure.",
       abs(whole.cost - tot.cost) >= 1 and ("The steps add up to " .. money(tot.cost) .. " (Materials): they are priced one after another as the route was planned.") or "The same as Materials above." } }
   out[#out + 1] = { lv = "whole", left = "Add route to shopping", button = true, action = addRouteToShopping }
-  shopRows(out, ctx, whole, "whole")
-  partRows(out, ctx, whole)
-  sellRows(out, ctx, prof, route.segs)
+  shopRows(out, ctx, whole, "whole", P ~= nil)
+  if P then   -- a started plan has no choices: they would not change it
+    out[#out + 1] = { lv = "whole", left = "" }
+    out[#out + 1] = { lv = "whole", left = DIM .. "Parts and where products sell are fixed while the plan is started. Plan again to change them.|r", fixed = true }
+  else
+    partRows(out, ctx, whole)
+    sellRows(out, ctx, prof, route.segs)
+  end
   -- every recipe to learn in one place, with where to get it: the list to take to the trainers
   if #learnList > 0 then
     out[#out + 1] = { lv = "whole", left = "" }
@@ -906,11 +1151,11 @@ local function buildRoute()
   end
 
   -- the selected step, for the pane
-  local at = pickStep(route.segs)
+  local at = pickStep(route.segs, prog and not prog.finished and prog.step or nil)
   if at then
     local g = route.segs[at]
-    shownStep = { i = at, g = g, r = g.r, n = g.r and (g.all or g.crafts) or 0, prof = prof }
-    stepRows(out, ctx, st, prof, recs[at], route)
+    shownStep = { i = at, g = g, r = g.r, n = g.r and (g.all or g.crafts) or 0, prof = prof, ctx = ctx }
+    stepRows(out, ctx, st, prof, recs[at], route, P, prog)
   end
   return out, title
 end
@@ -954,18 +1199,48 @@ local SUMS = { "points", "crafts", "time", "mats", "learn", "net" }
 -- The page's own bar: one row of controls (26 px), then the strip of figures. What is wrong with the plan is the
 -- window's footer line on this page, beside the scan buttons, so the list gets the height.
 local SUM_Y, SUM_H = 30, 46
+local ROUTE_W = 150   -- the Route settings button: "Route: balanced, limit"
 local FOOT = { route = 116, fix = 106, gap = 4 }   -- the footer's own buttons: Scan this route, and the fix for a range with no step
 
--- Real controls over a table's lines: a line whose row carries `control` gets a dropdown (or a button) over its
--- last cell. The widgets belong to the line and are made the first time a line needs one.
+-- Real controls over a table's lines: a line whose row carries `control` gets a dropdown (or a button, or a
+-- number box with - and +) over its last cell. The widgets belong to the line and are made the first time a line
+-- needs one.
 local function placeControl(t, b, c, last)
-  local dd, bt = rawget(b, "ctlDrop"), rawget(b, "ctlBtn")
+  local dd, bt, sp = rawget(b, "ctlDrop"), rawget(b, "ctlBtn"), rawget(b, "ctlStep")
   if type(dd) == "table" then dd:Hide() end
   if type(bt) == "table" then bt:Hide() end
+  if type(sp) == "table" then sp:Hide() end
   if not c then return end
   local w = max(c.w or 0, t.ws[last] or 0, 60)
   if t.opts.controlW then w = max(c.w or 0, t.opts.controlW) end
   local widget
+  if c.kind == "stepper" then   -- "I'm at skill": the line's own number, typed or stepped
+    if type(sp) ~= "table" then
+      sp = UI.stepper(b, { w = 44, min = function()
+        local cc = type(sp) == "table" and rawget(sp, "ctl") or nil
+        return cc and cc.min or nil
+      end, max = function()
+        local cc = type(sp) == "table" and rawget(sp, "ctl") or nil
+        return cc and cc.max or nil
+      end }, function()
+        local cc = type(sp) == "table" and rawget(sp, "ctl") or nil
+        return cc and cc.get and cc.get() or 0
+      end, function(v)
+        local cc = type(sp) == "table" and rawget(sp, "ctl") or nil
+        if cc and cc.set then cc.set(v) end
+      end)
+      b.ctlStep = sp
+    end
+    sp.ctl = c
+    w = UI.widthOf(sp)   -- the stepper's real width (it was a number written here)
+    sp:ClearAllPoints()
+    sp:SetPoint("LEFT", b, "LEFT", (t.xs[last] or 0) + (t.ws[last] or 0) - w, 0)
+    sp:Refresh()
+    sp:Show()
+    local cell = b.cells and b.cells[last]
+    if type(cell) == "table" and last > 1 then cell:SetText("") end
+    return
+  end
   if c.kind == "button" then
     if type(bt) ~= "table" then
       bt = UI.button(b, "", w, function(self)
@@ -1123,7 +1398,7 @@ local function setView(v)
 end
 
 page = NS.page({ key = "route", title = "Level", order = 1, icon = BOOK,
-  tip = { "Level", "The cheapest or the fastest way from one skill to another, step by step, with what to buy for it." },
+  tip = { "Level", "The way from one skill to another, step by step, with what to buy for it. Start a plan and it stays as it is while you level." },
   plan = true, bars = 1, barH = SUM_Y + SUM_H, detail = true,
   columns = STEP_COLS,
   empty = { icon = BOOK, title = "No route", text = "Choose a profession and a range above." },
@@ -1148,21 +1423,68 @@ page = NS.page({ key = "route", title = "Level", order = 1, icon = BOOK,
   build = function(pg)
     local at = pg.at
     withControls(pg.table)
-    -- the one row of controls: the two views, plan again, the plan as text, the route onto the Shopping list
-    -- (Cheapest | Fastest is at its right end, from the shell)
+    -- the one row of controls: the two views, start / forget the plan, plan again, the plan as text, the route onto
+    -- the Shopping list, and at its right end the Route settings button. It must stay one line: the strip of
+    -- figures sits right under it (the bar's height is stated, so a wrapped row would lie over the strip).
     pg.bSteps = at.put(UI.button(pg.bar, "Steps", 56, function() setView("steps") end,
       { "Steps", "The route step by step. Click a step and what it needs shows beside the list." }), 2)
     pg.bWhole = at.put(UI.button(pg.bar, "Whole route", 86, function() setView("whole") end,
       { "Whole route", "Everything the route buys, its choices (parts, where products sell) and the recipes to learn." }), 12)
+    -- Start this plan / Forget plan: one button, the plan is either started or it is not
+    pg.bStart = at.put(UI.button(pg.bar, "Start this plan", 104, function()
+      if NS.startedPlan() then
+        NS.confirm("Forget the plan you started? The page goes back to planning as you go: from your skill, at the prices of the last scan.", "Forget plan", function() NS.stopPlan() end)
+      else
+        local P, why = NS.startPlan()
+        if not P and why then NS.notice(why) end
+      end
+    end, function()
+      if NS.startedPlan() then
+        return { "Forget plan", "Stops following the started plan. The page then plans as you go again: every skill point, scan and setting can change the route." }
+      end
+      return { "Start this plan", "Keeps the route on screen exactly as it is. Prices, scans, bags, new recipes, your skill and the plan bar no longer change it.",
+        "Your skill marks the steps that are done and counts the crafts left in the one you are in.", "Plan again makes a new plan; Forget plan goes back to planning as you go." }
+    end))
     pg.bRefresh = at.put(UI.button(pg.bar, "Plan again", 76, function()
-      NS.bump()   -- plan again from scratch
-      NS.refresh()
-    end, { "Plan again", "Plans the route again from scratch." }))
+      if NS.planAgain then
+        NS.planAgain()   -- a started plan: asks once, then plans from the skill and the settings of now
+      else
+        NS.bump()
+        NS.refresh()
+      end
+    end, function()
+      if NS.startedPlan and NS.startedPlan() then
+        return { "Plan again", "The only way a started plan changes: asks once, then plans from your skill and the settings of now. The new plan is not started." }
+      end
+      return { "Plan again", "Plans the route again from scratch." }
+    end))
     pg.bCopy = at.put(UI.button(pg.bar, "Copy plan", 76, function()
       if NS.copyPlan then NS.copyPlan() end
     end, { "Copy plan", "The route as plain text in a box to copy from, to hand to somebody (/kebold copy)." }))
-    pg.bAddRoute = at.put(UI.button(pg.bar, "Add route to shopping", 150, addRouteToShopping,
-      { "Add route to shopping", "Puts the whole route on the Shopping list. The entry follows your skill and the prices: it shrinks as you level." }))
+    pg.bAddRoute = at.put(UI.button(pg.bar, "Add route to shopping", 150, addRouteToShopping, function()
+      if NS.startedPlan and NS.startedPlan() then
+        return { "Add route to shopping", "Puts what is left of the started plan on the Shopping list, step by step: from the step you are in, with the crafts still expected there.",
+          settings().routeSafe == true and "Buy for bad luck is on: each step goes on with enough for 9 times out of 10." or nil }
+      end
+      if settings().routeSafe == true then
+        return { "Add route to shopping", "Buy for bad luck is on: the route goes on step by step, each with enough crafts for bad luck 9 times out of 10." }
+      end
+      return { "Add route to shopping", "Puts the whole route on the Shopping list. The entry follows your skill and the prices: it shrinks as you level." }
+    end))
+    -- Route settings: one button at the right end that says the choice in words, and its panel (LedgerRoute.lua).
+    -- It stands where Cheapest | Fastest stood.
+    pg.bRoute = UI.button(pg.bar, NS.routeLabel and NS.routeLabel() or "Route settings", ROUTE_W, function(self)
+      if NS.routePanel then NS.routePanel(nil, pg.frame, self) end
+    end, function()
+      return { "Route settings", NS.routeText and ("Now: " .. NS.routeText() .. ".") or nil,
+        "What your time is worth, the most one skill point may cost, the three ready-made choices and Buy for bad luck.",
+        (NS.startedPlan and NS.startedPlan()) and "A started plan keeps the settings it was made with: Plan again to use new ones." or nil }
+    end)
+    if type(at.right) == "function" then
+      at.right(pg.bRoute, 0)   -- as wide as its label needs (ROUTE_W at least): the row places it by its real width
+    else
+      pg.bRoute:SetPoint("TOPRIGHT", pg.bar, "TOPRIGHT", 0, -2)
+    end
     -- rows 2 and 3: the six figures
     pg.cells = {}
     for k, key in ipairs(SUMS) do
@@ -1201,7 +1523,9 @@ page = NS.page({ key = "route", title = "Level", order = 1, icon = BOOK,
     pg.bFix:SetPoint("RIGHT", pg.bScanRoute, "LEFT", -FOOT.gap, 0)
     pg.bFix.footOff = true
     pg.footWidgets = { pg.bScanRoute, pg.bFix }
-    pg.footRoom = 26 + 110 + FOOT.gap + FOOT.route + FOOT.gap + FOOT.fix + 14
+    -- buttons grow to their text (the kit's `need`), so the room they take is theirs, not the stated widths
+    local function wide(b, w) return max(w, type(b) == "table" and type(b.need) == "number" and b.need or 0) end
+    pg.footRoom = 26 + wide(f.footScan, 110) + FOOT.gap + wide(pg.bScanRoute, FOOT.route) + FOOT.gap + wide(pg.bFix, FOOT.fix) + 14
     -- the pane of the selected step, in the split's right side; the Craft page's pane takes its place for a recipe
     pg.pane = buildPane(pg.split.right)
   end,
@@ -1215,7 +1539,7 @@ page = NS.page({ key = "route", title = "Level", order = 1, icon = BOOK,
   end,
   footer = function(pg) return pg.footLine or "" end,
   footScan = true,
-  marks = { "~", "?" },
+  marks = { "~", "*", "?" },
   layout = function(pg, w) place(pg, w) end,
   paint = function(pg, rows)
     local S = settings()
@@ -1226,6 +1550,39 @@ page = NS.page({ key = "route", title = "Level", order = 1, icon = BOOK,
     end
     pg.bSteps.label:SetText((v == "steps" and GOLD or DIM) .. "Steps|r")
     pg.bWhole.label:SetText((v == "whole" and GOLD or DIM) .. "Whole route|r")
+    -- a started plan or not; what the route is planned by
+    local started = NS.startedPlan ~= nil and NS.startedPlan() ~= nil
+    pg.bStart:SetLabel(started and "Forget plan" or "Start this plan")
+    -- The Route settings button says the choice in words, so its label changes ("Route: time at 25g an hour,
+    -- limit"): the button is as wide as the label needs, up to the room its row has left (the row must stay one
+    -- line: the strip of figures is right under it); with no room for the words it says them shorter
+    -- ("Route: 25g/h, limit"; the tooltip has the sentence). The row is placed again when its width changed.
+    do
+      local fl = pg.at and pg.at.flow or nil
+      local was = UI.widthOf(pg.bRoute)
+      local room
+      if fl then
+        local mine = fl:Where(pg.bRoute)
+        local x, last = fl.x0, fl.x0
+        for _, it in ipairs(fl.items) do
+          if mine and it.row == mine.row and it.right ~= true and it.on == true then
+            last = x + UI.widthOf(it.w)
+            x = last + it.gap
+          end
+        end
+        room = (pg.w or 700) - last - 8
+      end
+      pg.bRoute:SetLabel(NS.routeLabel and NS.routeLabel() or "Route settings")
+      pg.bRoute:Fit()
+      if room and NS.routeLabel and pg.bRoute.need > room then
+        pg.bRoute:SetLabel(NS.routeLabel(nil, true))
+        pg.bRoute:Fit()
+      end
+      if room and UI.widthOf(pg.bRoute) > max(ROUTE_W, room) then pg.bRoute:SetWidth(max(ROUTE_W, room)) end
+      if fl and UI.widthOf(pg.bRoute) ~= was then fl:Layout(pg.w or 700) end
+    end
+    local rp = NS.routePanelFrame and NS.routePanelFrame() or nil
+    if type(rp) == "table" and rp:IsShown() then rp:Refresh() end
     -- the strip and the status line, from the model
     local sums, status, ranges = {}, nil, 0
     for _, row in ipairs(rows) do
@@ -1256,6 +1613,7 @@ page = NS.page({ key = "route", title = "Level", order = 1, icon = BOOK,
     local cur = NS.current()
     pg.bAddRoute:SetEnabled(cur ~= nil and cur.route ~= nil and shownStep ~= nil and NS.shopAdd ~= nil,
       NS.shopAdd == nil and "The Shopping list is not loaded." or "There is no route to add.")
+    pg.bStart:SetEnabled(started or (cur ~= nil and cur.route ~= nil and shownStep ~= nil and NS.startPlan ~= nil), "There is no route to start.")
     place(pg, pg.w or 700)
     -- the pane: the selected step, unless a recipe's own details were asked for
     local s = pg.split
@@ -1284,3 +1642,7 @@ function NS.levelSelect(i)
   return g ~= nil
 end
 function NS.levelPane() return page.pane, paneMode end
+-- The selection follows a started plan's progress again (true), and: select the step of this recipe at this start
+-- on the next refresh (Use instead and Undo change a step's recipe under the selection).
+function NS.levelFollow(on) sel.follow = on and true or false end
+function NS.levelPick(id, from) sel.id, sel.from, sel.follow = id or false, from, false end

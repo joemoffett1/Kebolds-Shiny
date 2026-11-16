@@ -137,8 +137,10 @@ local function readItems(itemKey, tiers)
     local qty = r and r.quantity or 0
     -- Bid-only auctions have no price anyone can simply pay, so they are not part of the ladder.
     if qty > 0 and r.buyoutAmount and r.buyoutAmount > 0 then
-      -- Rounded up: a stack of 20 for 199c costs at least 10c a unit to the buyer.
-      addTier(tiers, math.ceil(r.buyoutAmount / qty), qty)
+      -- A row of an item search is `quantity` identical auctions that each cost `buyoutAmount` (Blizzard's own
+      -- window shows the buyout undivided beside the quantity): the price is not divided by the quantity.
+      -- not seen in game: check with /keboldscan debug <id> on an item one seller listed several times
+      addTier(tiers, r.buyoutAmount, qty)
     end
   end
   return n, n == 0 or AH.HasFullItemSearchResults(itemKey)
@@ -422,6 +424,30 @@ function KeboldsShinyScan_Stop()
   finish("Scan stopped")
   return true
 end
+-- For Kebold's buy panel (LedgerBuy.lua): the price lines the game itself just showed for one item (the player
+-- opened it on the Buy tab) become that item's reading, exactly as a scan of the item would have saved it: the
+-- same string (encode), the day's history reading and the vendor-value note. tiers = { { unit price, quantity },
+-- ... } in any order; an empty list is "none listed". Nothing is saved while a scan or a debug run is going: the
+-- results the client holds then are the scan's. Returns saved, changed (the text differs from the one before).
+-- The caller decides which items are worth saving and tells Kebold that prices moved.
+function KeboldsShinyScan_SaveLadder(itemID, tiers)
+  if scan or quick or debugRun then return false, false end
+  if type(itemID) ~= "number" or itemID <= 0 or type(tiers) ~= "table" then return false, false end
+  local map = {}
+  for _, t in ipairs(tiers) do
+    local price, qty = type(t) == "table" and tonumber(t[1]) or nil, type(t) == "table" and tonumber(t[2]) or nil
+    if price and qty and price > 0 and qty > 0 then addTier(map, math.ceil(price), math.floor(qty)) end
+  end
+  local store, day = realmStore(), today()
+  local text, total, low = encode(day, map)
+  local changed = store.items[itemID] ~= text
+  store.items[itemID] = text
+  if type(KeboldsShinyHistory) == "table" and KeboldsShinyHistory.record then
+    pcall(KeboldsShinyHistory.record, store, itemID, day, low, total)
+  end
+  readSell(itemID)   -- the item is on screen, so its data is loaded
+  return true, changed
+end
 
 local function status()
   local items = KeboldsShinyScanItems or {}
@@ -431,6 +457,9 @@ local function status()
   elseif debugRun then
     say(string.format("Debug run active: %.0f of %d seconds, %d lines logged.",
       GetTime() - debugRun.started, DEBUG_SECONDS, #debugRun.log))
+  elseif quick then
+    local ok, p = pcall(Q.progress)
+    say("Quick scan running: " .. ((ok and type(p) == "table" and p.text ~= "" and p.text) or "working") .. ".")
   else
     say("Idle. The auction house is " .. (ahOpen and "open." or "closed."))
   end
@@ -850,6 +879,14 @@ local function parseReading(text)
     if not r.low then r.low = tonumber(p) end
   end
   return r
+end
+
+-- For Kebold's buy panel: the day and the number listed of the item's stored reading, and today's day number
+-- (nil, nil, today without a reading). The panel uses it to keep a fuller same-day reading.
+function KeboldsShinyScan_Reading(itemID)
+  local r = parseReading(realmStore().items[itemID])
+  if not r then return nil, nil, today() end
+  return r.day, r.total, today()
 end
 
 local function throttleReady()

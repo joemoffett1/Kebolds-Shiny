@@ -78,6 +78,43 @@ function UI.cellFont(fs)
   return fs
 end
 
+-- ---- how wide a text is, and the fonts of controls --------------------------------------------------------------
+-- Nothing here reads a size back from the game, so a text's width is ESTIMATED: its visible characters times an
+-- average width for the font. This is the one place that guess lives (button widths, labelled dropdowns and the
+-- rows of a bar all come from it); the numbers were never measured in game.
+UI.CHAR_W = { small = 5.5, normal = 6.5, large = 8.5 }
+local FONT_SIZE = { GameFontHighlightSmall = "small", GameFontNormalSmall = "small", GameFontDisableSmall = "small",
+  GameFontHighlight = "normal", GameFontNormal = "normal", GameFontDisable = "normal", GameFontNormalLarge = "large" }
+function UI.textWidth(text, font)
+  local s = tostring(text or "")
+  if UI.plainText then s = UI.plainText(s) end
+  s = s:gsub("[\128-\191]", "")   -- a character of several bytes counts once
+  return ceil(#s * UI.CHAR_W[FONT_SIZE[font or ""] or "normal"])
+end
+-- The fonts of a control (a button's label, a dropdown's value, a check box's and a bar's labels): the size the
+-- list uses at the Row size now in force.   -> { text, gold, off } font object names
+function UI.ctlFonts()
+  if UI.density().font == "GameFontHighlightSmall" then
+    return { text = "GameFontHighlightSmall", gold = "GameFontNormalSmall", off = "GameFontDisableSmall" }
+  end
+  return { text = "GameFontHighlight", gold = "GameFontNormal", off = "GameFontDisable" }
+end
+-- Controls whose font and width follow the Row size register here (weak keys); UI.refit() fits them all again
+-- after the Row size changed. A bar's rows are then placed again by its flow (UI.flow).
+local fitted = setmetatable({}, { __mode = "k" })
+function UI.fitLater(w) fitted[w] = true end   -- w.kitFit(w) runs on every UI.refit()
+function UI.refit()
+  for w in pairs(fitted) do
+    local fit = rawget(w, "kitFit")
+    if type(fit) == "function" then pcall(fit, w) end
+  end
+end
+-- The width a control takes in a bar: what it says itself (kitW: a check box with its label, a labelled dropdown),
+-- else its frame's width.
+function UI.widthOf(w)
+  return tonumber(rawget(w, "kitW")) or tonumber((w:GetWidth())) or 0
+end
+
 -- Does this client have the template? Tried once on an unnamed frame that is hidden at once.
 local KIND = {
   UIPanelButtonTemplate = "Button", PanelTabButtonTemplate = "Button", InputBoxTemplate = "EditBox", SearchBoxTemplate = "EditBox",
@@ -190,8 +227,20 @@ function UI.tip(w, tip)
     if type(t) == "function" then t = t(self) end
     if type(t) == "string" then t = { t } end
     local why = type(self.why) == "string" and self.why or nil   -- set by SetEnabled(false, why) on a kit button
-    if (not isTable(t) or #t == 0) and not why then return end
-    t = isTable(t) and t or {}
+    -- only the lines that are text, in order: a list with a nil or another value in it must not reach the game's
+    -- tooltip (AddLine(nil) is an error there, and the reason below would never show)
+    local lines = {}
+    if isTable(t) then
+      local last = 0
+      for k in pairs(t) do
+        if type(k) == "number" and k > last and k == math.floor(k) then last = k end
+      end
+      for i = 1, math.min(last, 60) do
+        if type(t[i]) == "string" then lines[#lines + 1] = t[i] end
+      end
+    end
+    t = lines
+    if #t == 0 and not why then return end
     GameTooltip:SetOwner(self, UI.tipAnchor(self))
     GameTooltip:SetText(UI.show(t[1] or why), 1, 0.82, 0, 1, true)
     for i = 2, #t do GameTooltip:AddLine(UI.show(t[i]), 1, 1, 1, true) end
@@ -309,15 +358,18 @@ end
 
 -- ---- button ----------------------------------------------------------------------------------------------------------
 
--- Fields: .label (FontString), :SetLabel(text), :SetDim(bool), .native
-function UI.button(parent, text, w, onClick, tip)
+-- A button is as wide as its text needs (UI.textWidth plus BUTTON_PAD); a width passed in is its smallest width.
+-- fixed = true keeps exactly the width passed (a button on a list's line, in a column of its own). A button made
+-- with no text ("": a control whose label is written later) keeps the width passed too. Its font is the list's
+-- at the Row size in force; :Fit() works both out again (UI.refit() after the Row size changed).
+-- Fields: .label (FontString), :SetLabel(text), :SetDim(bool), .native, .need (what the text needs), :Fit()
+local BUTTON_PAD = 24
+UI.BUTTON_PAD = BUTTON_PAD
+function UI.button(parent, text, w, onClick, tip, fixed)
   local b = make("Button", nil, parent, "UIPanelButtonTemplate")
   local native = b ~= nil
   local label
   if native then
-    pcall(b.SetNormalFontObject, b, "GameFontNormalSmall")
-    pcall(b.SetHighlightFontObject, b, "GameFontHighlightSmall")
-    pcall(b.SetDisabledFontObject, b, "GameFontDisableSmall")
     pcall(b.SetText, b, text or "")
     if isTable(b.Text) then
       label = b.Text
@@ -336,10 +388,31 @@ function UI.button(parent, text, w, onClick, tip)
     label = b:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     label:SetPoint("CENTER")
   end
-  b:SetSize(w or 80, native and 22 or 20)
   b.label, b.native, b.off = label, native, false
+  b.minW, b.fitText, b.need, b.valueFont = w or false, text or "", 0, false
+  b.auto = (fixed ~= true) and (text or "") ~= ""
   label:SetText(text or "")
-  function b:SetLabel(s) self.label:SetText(s) end
+  function b:Fit()
+    local fonts = UI.ctlFonts()
+    local gold = (rawget(self, "valueFont") == true) and fonts.text or fonts.gold
+    if self.native then
+      pcall(self.SetNormalFontObject, self, gold)
+      pcall(self.SetHighlightFontObject, self, fonts.text)
+      pcall(self.SetDisabledFontObject, self, fonts.off)
+    else
+      pcall(self.label.SetFontObject, self.label, fonts.text)
+    end
+    self.need = UI.textWidth(self.fitText, fonts.text) + BUTTON_PAD
+    if self.auto == true then self:SetWidth(max(tonumber(self.minW) or 0, self.need)) end
+  end
+  b.kitFit = b.Fit
+  b:SetSize(w or 80, native and 22 or 20)
+  b:Fit()
+  fitted[b] = true
+  function b:SetLabel(s)   -- the width is not changed here; fitLock = true keeps it fitted to the text it was made with
+    self.label:SetText(s)
+    if rawget(self, "fitLock") ~= true then self.fitText = s or "" end
+  end
   function b:SetDim(dim) self:SetAlpha(dim and 0.5 or 1) end
   -- SetEnabled(false, "why"): the game's own greyed-out state where the button has one, a faded one otherwise; a
   -- click then does nothing and the tooltip ends with the reason. SetEnabled(true) puts it back.
@@ -570,6 +643,97 @@ function UI.closeMenu()
   if pop then pop:Hide() end
 end
 
+-- ---- popup: a panel that closes when you click somewhere else ----------------------------------------------------------
+
+-- UI.popup(frame [, onClose]): call it once, when the panel is made. While the panel shows, an invisible frame
+-- covers the whole screen just under it: a mouse button pressed anywhere outside the panel closes it, and so does
+-- Escape. The keyboard is NOT captured (a frame that takes the keys and hands them on needs a call the game may
+-- refuse in combat, and would then swallow every key): while a popup is open an empty named frame is shown that
+-- the game itself hides on Escape (UISpecialFrames, as the kit's menu does), and that closes the popup. Escape
+-- closes the game's other special windows at the same press, Kebold's own window among them.
+-- The click that closes it is used up: it does NOT also act on
+-- what was under the pointer (so a click on the button that opened the panel closes it and does not open it again).
+--   onClose(frame, why)   why = "outside" | "escape"; it must hide the frame (left out: frame:Hide())
+-- One popup at a time: showing a second closes the first. UI.closePopup() closes the one open (a question that
+-- must be answered, NS.confirm, calls it first and is itself no popup: a click beside it must not answer it).
+-- Fields for the tests: UI.popupCatch (the catcher, made at the first use), UI.popupEsc (the frame Escape hides),
+-- UI.popupNow() -> the open popup or nil.
+local popNow, popClose = nil, {}
+local popEsc = nil   -- false: it could not be made
+local function escFrame()
+  if popEsc == nil then
+    popEsc = false
+    local ok, f = pcall(CreateFrame, "Frame", "KeboldsShinyPopupEsc", UIParent)
+    if ok and isTable(f) then
+      f:Hide()
+      f:SetScript("OnHide", function()   -- hidden by the game's Escape while a popup is open (we hide it only after popNow is cleared)
+        if popNow then UI.closePopup("escape") end
+      end)
+      if isTable(UISpecialFrames) then table.insert(UISpecialFrames, "KeboldsShinyPopupEsc") end
+      popEsc = f
+      UI.popupEsc = f
+    end
+  end
+  return popEsc
+end
+local function popupDone(frame, why)
+  local fn = popClose[frame]
+  if type(fn) == "function" then fn(frame, why) else frame:Hide() end
+  if frame:IsShown() then frame:Hide() end   -- whatever onClose did, it is closed now
+end
+function UI.popupNow() return popNow end
+function UI.closePopup(why)
+  local f = popNow
+  if not f then return false end
+  popNow = nil
+  if isTable(UI.popupCatch) then UI.popupCatch:Hide() end
+  if isTable(popEsc) then popEsc:Hide() end
+  popupDone(f, why or "other")
+  return true
+end
+function UI.popup(frame, onClose)
+  popClose[frame] = onClose or false
+  local function arm(self)
+    if popNow and popNow ~= self then UI.closePopup("other") end
+    local catch = UI.popupCatch
+    if not isTable(catch) then
+      catch = CreateFrame("Frame", nil, UIParent)
+      catch:SetAllPoints(UIParent)
+      catch:EnableMouse(true)
+      catch:SetScript("OnMouseDown", function() UI.closePopup("outside") end)
+      UI.popupCatch = catch
+    end
+    -- the catcher sits in the popup's own strata, one level under it (the popup is raised when it has no level
+    -- to spare), so everything else on screen is behind the catcher and the popup's own controls are in front
+    local ok, strata = pcall(self.GetFrameStrata, self)
+    pcall(catch.SetFrameStrata, catch, (ok and type(strata) == "string") and strata or "DIALOG")
+    local level = num(self:GetFrameLevel(), 0)
+    if level < 2 then
+      level = 10
+      pcall(self.SetFrameLevel, self, level)
+    end
+    pcall(catch.SetFrameLevel, catch, level - 1)
+    popNow = self
+    catch:Show()
+    local esc = escFrame()
+    if isTable(esc) then esc:Show() end
+  end
+  local function disarm(self)
+    if popNow == self then
+      popNow = nil
+      if isTable(UI.popupCatch) then UI.popupCatch:Hide() end
+      if isTable(popEsc) then popEsc:Hide() end
+      -- out of sight because the window it belongs to was hidden (Escape closes that too), while the popup itself
+      -- still counts as shown: closed for good, or it would be back, half filled in, when the window returns
+      if self:IsShown() == true then popupDone(self, "escape") end
+    end
+  end
+  frame:HookScript("OnShow", arm)
+  frame:HookScript("OnHide", disarm)
+  if frame:IsShown() then arm(frame) end
+  return frame
+end
+
 -- ---- dropdown --------------------------------------------------------------------------------------------------------
 
 -- A button that shows the current choice and opens a menu. Fields: .label, :Refresh()
@@ -596,6 +760,182 @@ function UI.dropdown(parent, w, getText, getItems, tip)
   return b
 end
 
+-- A labelled dropdown: a plain text label, then a dropdown that holds only the value ("Recipes [Trainer only v]").
+-- A labelled box reads as a setting, a bare red button as an action; and no value is cut, because the box is as
+-- wide as its longest value.
+--   c = UI.choice(parent, caption, values, getText, getItems, tip [, minW [, maxW]])
+--   values: the texts the box may show (a list, or a function returning one): it is sized for the longest;
+--           minW / maxW bound the box (a value longer than maxW is cut; the menu shows it whole)
+-- Fields: .caption (FontString), .drop (the dropdown), .label (the value's FontString), .getItems, .need (what the
+--         longest value needs), .boxW, .kitW (label + box), :Refresh(), :Fit()
+local CHOICE_GAP, DROP_PAD = 4, 32   -- between the label and the box; the box's left edge plus its arrow
+function UI.choice(parent, caption, values, getText, getItems, tip, minW, maxW)
+  local h = CreateFrame("Frame", nil, parent)
+  h.caption = h:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  h.caption:SetPoint("LEFT", 0, 0)
+  h.caption:SetText(caption or "")
+  h.captionText = caption or ""
+  h.drop = UI.dropdown(h, minW or 60, getText, getItems, tip)
+  h.drop.valueFont = true   -- the value in white: it is a setting, not an action
+  h.label, h.getItems, h.need, h.kitW, h.boxW = h.drop.label, getItems, 0, 0, 0
+  function h:Fit()
+    local fonts = UI.ctlFonts()
+    pcall(self.caption.SetFontObject, self.caption, fonts.text)
+    self.drop:Fit()
+    local list = type(values) == "function" and values() or values
+    local need = 0
+    for _, v in ipairs(type(list) == "table" and list or {}) do need = max(need, UI.textWidth(v, fonts.text)) end
+    self.need = need + DROP_PAD
+    local box = max(minW or 0, self.need)
+    if maxW then box = min(box, maxW) end
+    local cw = self.captionText ~= "" and (UI.textWidth(self.captionText, fonts.text) + CHOICE_GAP) or 0
+    self.boxW, self.kitW = box, cw + box
+    self.drop:SetWidth(box)
+    self.drop:ClearAllPoints()
+    self.drop:SetPoint("LEFT", self, "LEFT", cw, 0)
+    self:SetSize(self.kitW, 22)
+  end
+  h.kitFit = h.Fit
+  function h:Refresh()
+    self.drop:Refresh()
+  end
+  h:Fit()
+  fitted[h] = true
+  return h
+end
+
+-- A button that is a switch: it looks pressed while on ("Details" beside Find, while the pane is open).
+--   t = UI.toggle(parent, text, w, get, set, tip)     get() -> bool, set(bool)
+-- Fields: .pressed, :Refresh() (and a button's own)
+function UI.toggle(parent, text, w, get, set, tip)
+  local b
+  b = UI.button(parent, text, w, function()
+    set(not (get() and true or false))
+    b:Refresh()
+  end, tip)
+  b.pressed = false
+  -- While on: the game's own pushed look where the template follows SetButtonState, and a soft gold light over
+  -- the button either way (a template that draws its own states from mouse events would show nothing otherwise).
+  b.on = colour(b, b.native and "ARTWORK" or "BORDER", 1, 0.82, 0, b.native and 0.16 or 0.35)
+  if b.native then
+    b.on:SetPoint("TOPLEFT", 4, -3)
+    b.on:SetPoint("BOTTOMRIGHT", -4, 3)
+    pcall(b.on.SetBlendMode, b.on, "ADD")
+  else
+    b.on:SetAllPoints()
+  end
+  b.on:Hide()
+  function b:Refresh()
+    local on = get() and true or false
+    self.pressed = on
+    if self.native then
+      pcall(self.SetButtonState, self, on and "PUSHED" or "NORMAL", on)   -- locked in the pushed look while on
+    end
+    if on then self.on:Show() else self.on:Hide() end
+  end
+  b:Refresh()
+  return b
+end
+
+-- ---- flow: the rows of a bar -----------------------------------------------------------------------------------------
+
+-- Places a bar's controls in rows, from the left, and again whenever the bar's width or the Row size changes.
+--   f = UI.flow(bar, rowH [, x0])
+--   f:Add(widget, opts) -> widget     opts: gap (after it, 6), w (its width, else UI.widthOf), row (which row it
+--                                     belongs to, 1 by default: the row last used), right = true (at the right
+--                                     end of its row, in the order added), dy (down from the row's top),
+--                                     when = function() -> bool (placed and shown only while true)
+--   f:Layout(w) -> height             a row whose controls do not fit wraps onto a further row rather than
+--                                     being cut; the rows below move down
+-- Fields: .items ({ w = widget, x, y, got (its width), line }), .lines (rows used), .used (the right end of the
+--         widest row), .need (the width the rows take, right-hand controls included), .h, .w;
+--         f:Where(widget) -> its item;  f:Fits() -> ok, what (every control inside the width, and
+--         every button and labelled dropdown as wide as its text needs)
+function UI.flow(bar, rowH, x0)
+  local f = { bar = bar, rowH = rowH or 26, x0 = x0 or 0, items = {}, row = 1, lines = 0, used = 0, need = 0, h = 0, w = false }
+  function f:Add(widget, opts)
+    opts = opts or {}
+    self.row = opts.row or self.row
+    self.items[#self.items + 1] = { w = widget, gap = opts.gap or 6, width = opts.w or false, row = self.row, right = opts.right == true,
+      dy = opts.dy or 0, when = opts.when or false, x = 0, y = 0, line = 0, on = true, got = 0 }
+    return widget
+  end
+  function f:Where(widget)
+    for _, it in ipairs(self.items) do
+      if it.w == widget then return it end
+    end
+  end
+  local function place(it, x, line, self)
+    it.x, it.line = x, line
+    it.y = -2 - (line - 1) * self.rowH - it.dy
+    it.w:ClearAllPoints()
+    it.w:SetPoint("TOPLEFT", self.bar, "TOPLEFT", it.x, it.y)
+  end
+  function f:Layout(w)
+    w = tonumber(w) or tonumber(self.w) or 0
+    self.w = w
+    local rows, order = {}, {}
+    for _, it in ipairs(self.items) do
+      it.on = (it.when == false) or (it.when() and true or false)
+      if it.when ~= false then
+        if it.on then it.w:Show() else it.w:Hide() end
+      end
+      if it.on then
+        it.got = tonumber(it.width) or UI.widthOf(it.w)
+        if not rows[it.row] then
+          rows[it.row] = { left = {}, right = {} }
+          order[#order + 1] = it.row
+        end
+        local r = rows[it.row]
+        local side = it.right and r.right or r.left
+        side[#side + 1] = it
+      end
+    end
+    table.sort(order)
+    local line, used, need = 0, 0, 0
+    for _, key in ipairs(order) do
+      local r = rows[key]
+      local rightW = 0
+      for i, it in ipairs(r.right) do rightW = rightW + it.got + (i > 1 and r.right[i - 1].gap or 0) end
+      local room = rightW > 0 and (rightW + 8) or 0   -- kept free for the right-hand controls, on every line of the row
+      line = line + 1
+      local x = self.x0
+      for _, it in ipairs(r.left) do
+        if x > self.x0 and x + it.got > w - room then   -- no room left on this line: the next one
+          line = line + 1
+          x = self.x0
+        end
+        place(it, x, line, self)
+        used = max(used, x + it.got)
+        need = max(need, x + it.got + room)
+        x = x + it.got + it.gap
+      end
+      need = max(need, rightW)
+      local rx = max(w - rightW, x > self.x0 and x or self.x0)
+      for _, it in ipairs(r.right) do
+        place(it, rx, line, self)
+        used = max(used, rx + it.got)
+        rx = rx + it.got + it.gap
+      end
+    end
+    self.lines, self.used, self.need, self.h = line, used, need, line * self.rowH
+    return self.h
+  end
+  function f:Fits()
+    for _, it in ipairs(self.items) do
+      if it.on then
+        local need = tonumber(rawget(it.w, "need"))
+        local have = tonumber(rawget(it.w, "boxW")) or it.got
+        local name = tostring(rawget(it.w, "fitText") or rawget(it.w, "captionText") or "?")
+        if need and need > have then return false, name .. " needs " .. need .. ", has " .. have end
+        if it.x + it.got > (tonumber(self.w) or 0) then return false, name .. " ends at " .. (it.x + it.got) .. " of " .. tostring(self.w) end
+      end
+    end
+    return true
+  end
+  return f
+end
+
 -- ---- edit boxes ------------------------------------------------------------------------------------------------------
 
 local function plainEdit(parent)
@@ -608,7 +948,12 @@ end
 local function dressEdit(e, w)
   e:SetSize(w, 20)
   e:SetAutoFocus(false)
-  e:SetFontObject(GameFontHighlightSmall or "GameFontHighlightSmall")
+  function e.kitFit(self)   -- what is typed is in the list's font at the Row size in force
+    local name = UI.ctlFonts().text
+    pcall(self.SetFontObject, self, _G[name] or name)
+  end
+  e:kitFit()
+  fitted[e] = true
   e:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
   e:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
   return e
@@ -684,7 +1029,16 @@ function UI.check(parent, text, get, set, tip)
     end)
   end
   label:SetText(text or "")
-  c.label = label
+  c.label, c.kitW = label, 0
+  local boxW = tonumber((c:GetWidth())) or 22
+  function c:Fit()   -- the label's font follows the Row size; kitW is the box with its label, for a bar's rows
+    local fonts = UI.ctlFonts()
+    pcall(self.label.SetFontObject, self.label, fonts.text)
+    self.kitW = boxW + 4 + UI.textWidth(text or "", fonts.text)
+  end
+  c.kitFit = c.Fit
+  c:Fit()
+  fitted[c] = true
   function c:Refresh() self:SetChecked(get() and true or false) end
   UI.tip(c, tip)
   c:Refresh()
@@ -789,6 +1143,11 @@ function UI.slider(parent, o, get, set)
   h.unit = unit
   h.reset = UI.button(h, "Reset", 50, function() set(nil) end, "Back to the default.")
   h.reset:SetPoint("RIGHT", 0, 0)
+  -- wide enough for all of it: the slider, the box, the unit and Reset as wide as its text at the larger Row size
+  -- (the button grows with its text; with a width stated by hand it ended on top of a long unit, " g an hour")
+  local resetW = max(UI.widthOf(h.reset), UI.textWidth("Reset", "GameFontHighlight") + BUTTON_PAD)
+  h.kitW = max(o.w or (sw + 150), sw + 12 + 44 + 4 + UI.textWidth(o.unit or "", "GameFontHighlightSmall") + 8 + resetW)
+  h:SetWidth(h.kitW)
 
   function h:Refresh()
     local v = get()
@@ -1091,22 +1450,54 @@ end
 
 -- A vertical rail of page buttons: icon, name, a mark on the selected one, an optional badge.
 --   nav = UI.nav(parent, width, onPick)        onPick(key) runs on a click
---   nav:Add(key, text, icon, tip) -> button    icon: a texture path or file id; none in the plain skin or with icons off
+--   nav:Add(key, text, icon, tip, group) -> button    icon: a texture path or file id; none in the plain skin or
+--                                              with icons off. group (1 by default): a thin rule is drawn where
+--                                              the group changes (.dividers = how many, .rules[i].before = key)
 --   nav:Select(key)   nav:SetBadge(key, text or nil)   nav:SetLabel(key, text)
 -- Fields: .buttons[key] (.label, .icon, .badge, .selected), .order
-local NAV_H = 30
+local NAV_H, NAV_RULE = 30, 10   -- a button's height; the space a rule between two groups takes
 function UI.nav(parent, w, onPick)
   local nav = CreateFrame("Frame", nil, parent)
   nav.buttons, nav.order, nav.w, nav.selectedKey = {}, {}, w or 130, false
+  nav.rules, nav.dividers = {}, 0
   nav:SetSize(nav.w, 10)
   local native = not UI.plain()
-  function nav:Add(key, text, icon, tip)
+  -- Places the buttons from the top; where the group changes from one button to the next there is a thin rule.
+  function nav:Arrange()
+    local y, last, used = 0, nil, 0
+    for _, key in ipairs(self.order) do
+      local b = self.buttons[key]
+      if last ~= nil and b.group ~= last then
+        used = used + 1
+        local rule = self.rules[used]
+        if not rule then
+          rule = colour(self, "ARTWORK", 1, 1, 1, 0.18)
+          rule:SetHeight(1)
+          self.rules[used] = rule
+        end
+        rule:ClearAllPoints()
+        rule:SetPoint("TOPLEFT", 8, -(y + NAV_RULE / 2 - 1))
+        rule:SetWidth(self.w - 16)
+        rule:Show()
+        rule.before = key
+        y = y + NAV_RULE
+      end
+      last = b.group
+      b.y = y
+      b:ClearAllPoints()
+      b:SetPoint("TOPLEFT", 0, -y)
+      y = y + NAV_H + 2
+    end
+    for i = used + 1, #self.rules do self.rules[i]:Hide() end
+    self.dividers = used
+    self:SetHeight(max(10, y))
+  end
+  function nav:Add(key, text, icon, tip, group)
     local b = CreateFrame("Button", nil, self)
     local n = #self.order + 1
     self.order[n], self.buttons[key] = key, b
-    b.key = key
+    b.key, b.group, b.y = key, group or 1, 0
     b:SetSize(self.w, NAV_H)
-    b:SetPoint("TOPLEFT", 0, -(n - 1) * (NAV_H + 2))
     b.bg = colour(b, "BACKGROUND", 1, 0.82, 0, 0.14)
     b.bg:SetAllPoints()
     b.bg:Hide()
@@ -1137,7 +1528,7 @@ function UI.nav(parent, w, onPick)
     b.selected = false
     b:SetScript("OnClick", function() if onPick then onPick(key) end end)
     UI.tip(b, tip)
-    self:SetHeight(n * (NAV_H + 2))
+    self:Arrange()
     return b
   end
   function nav:Select(key)
@@ -1577,6 +1968,7 @@ function UI.table(parent, columns, opts)
       b:SetHeight(h)
       local wide = not row.cols and (row.wide or not (row.c1 or row.c2 or row.right or row.time)) and true or false
       local nextUsed   -- the first column after the first that has something in it on this line
+      local used = {}  -- [k] = column k has a text on this line
       for k, c in ipairs(cols) do
         local text
         if row.cols then
@@ -1590,6 +1982,8 @@ function UI.table(parent, columns, opts)
         text = text ~= nil and tostring(text) or ""
         if k > 1 and text ~= "" and not nextUsed then nextUsed = k end
         b.cells[k]:SetText(UI.show(text))
+        used[k] = text ~= ""
+        if k > 1 and k < last and self.shown[k] then b.cells[k]:SetWidth(self.ws[k]) end   -- a line is reused: back to the column's width
       end
       -- A line that is not one text per column lets its first text run on over the columns it leaves empty, and a
       -- line that is only a label and a value lets a long value grow to the left (up to 60% of the line).
@@ -1619,6 +2013,29 @@ function UI.table(parent, columns, opts)
         fs:SetPoint("LEFT", lastX, 0)
         fs:SetWidth(lastW)
       end
+      -- A section head is a title, not one figure per column: each of its texts runs on over the empty cells to
+      -- its right, up to the next cell that says something (or the line's end), instead of being cut at its own
+      -- column ("Materials for the whole route  2..."). Left-aligned cells only: a right-aligned one would move.
+      b.ran = false
+      if row.section and not wide then
+        for k = 1, last - 1 do
+          if self.shown[k] and used[k] and (k > 1 or row.cols) and (cols[k].align or "LEFT") == "LEFT" then
+            local stop
+            for j = k + 1, last do
+              if self.shown[j] and used[j] then
+                stop = j
+                break
+              end
+            end
+            local upTo = stop and ((stop == last and lastX or self.xs[stop]) - gap) or (self.xs[1] + whole)
+            local w = upTo - self.xs[k]
+            if w > self.ws[k] then
+              b.cells[k]:SetWidth(w)
+              b.ran = b.ran or k
+            end
+          end
+        end
+      end
       UI.decorate(b, row, at)
       if opts.selected and opts.selected(row) then b.sel:Show() else b.sel:Hide() end
       b:Show()
@@ -1638,7 +2055,9 @@ end
 
 -- ---- split -----------------------------------------------------------------------------------------------------------
 
--- Two panes side by side with a divider; the right one can be folded away with the small button on the divider.
+-- Two panes side by side with a thin rule between them; the right one can be folded away (s:SetCollapsed, or a
+-- UI.toggle beside the page's Find box: there is no button on the divider any more, .toggle is kept hidden so
+-- what clicked it still works).
 --   s = UI.split(parent, opts)
 --   opts: rightWidth (360), minLeft (300: under that the right pane is folded without being asked),
 --         get() -> is it folded, set(bool) -> save it (both optional: without them the state lives in the split),
@@ -1665,6 +2084,7 @@ function UI.split(parent, opts)
   hi:SetAllPoints()
   s.toggle.label = UI.text(s.toggle, "body", ">")
   s.toggle.label:SetPoint("CENTER")
+  s.toggle:Hide()
   function s:IsCollapsed()
     if opts.get then return opts.get() and true or false end
     return self.collapsed and true or false
@@ -1896,12 +2316,16 @@ end
 -- A whole number with - and + beside it; a value can also be typed (Enter or a click elsewhere applies it).
 --   st = UI.stepper(parent, o, get, set)
 --   o: min, max (numbers or functions), step (a number, or a function of the value now), w (the box's width), tip
--- Fields: .box, .minus, .plus, :Refresh()
+-- Its two buttons keep their 22 px (fixed: a button otherwise grows to its text plus padding, and the "+" then
+-- ends past the frame, on top of whatever follows it), so the frame is exactly minus + 6 + box + 2 + plus wide.
+-- Fields: .box, .minus, .plus, .kitW (its whole width: place what follows after it), :Refresh()
+local STEP_BTN = 22
 function UI.stepper(parent, o, get, set)
   o = o or {}
   local st = CreateFrame("Frame", nil, parent)
   local bw = o.w or 44
-  st:SetSize(bw + 52, 22)
+  st.kitW = STEP_BTN + 6 + bw + 2 + STEP_BTN
+  st:SetSize(st.kitW, 22)
   -- min / max: a number, a function returning one, or nothing (also from the function) for no limit
   local function limit(x)
     if type(x) == "function" then x = x() end
@@ -1924,11 +2348,11 @@ function UI.stepper(parent, o, get, set)
     if type(s) == "function" then s = s(get() or 0) end
     return num(s, 1)
   end
-  st.minus = UI.button(st, "-", 22, function() apply((get() or 0) - stepOf()) end)
+  st.minus = UI.button(st, "-", STEP_BTN, function() apply((get() or 0) - stepOf()) end, nil, true)
   st.minus:SetPoint("LEFT", 0, 0)
   st.box = UI.edit(st, bw, true)
   st.box:SetPoint("LEFT", st.minus, "RIGHT", 6, 0)
-  st.plus = UI.button(st, "+", 22, function() apply((get() or 0) + stepOf()) end)
+  st.plus = UI.button(st, "+", STEP_BTN, function() apply((get() or 0) + stepOf()) end, nil, true)
   st.plus:SetPoint("LEFT", st.box, "RIGHT", 2, 0)
   st.box:SetScript("OnEnterPressed", function(self)
     local v = tonumber(self:GetText())
@@ -2082,7 +2506,7 @@ function UI.gallery()
     if gallery:IsShown() then gallery:Hide() else gallery:Show() end
     return gallery
   end
-  local g = UI.window("KeboldsShinyGallery", UIParent, 1180, 640, { top = 60, bottom = 10 })
+  local g = UI.window("KeboldsShinyGallery", UIParent, 1180, 760, { top = 60, bottom = 10 })
   gallery = g
   g:SetPoint("CENTER")
   g:SetFrameStrata("DIALOG")
@@ -2176,10 +2600,10 @@ function UI.gallery()
     dis:SetEnabled(false, "Open the auction house first.")
     local nav = UI.nav(g, 120, function(key) g.made[side .. ".nav"]:Select(key) end)
     nav:Add("level", "Level", "Interface\\Icons\\INV_Misc_Book_09", "A page.")
-    nav:Add("prices", "Prices", "Interface\\Icons\\INV_Misc_Coin_01")
+    nav:Add("prices", "Prices", "Interface\\Icons\\INV_Misc_Coin_01", nil, 2)
     nav:Select("level")
     nav:SetBadge("prices", "!")
-    put("nav", nav, 64, forced and "text only" or "icons")
+    put("nav", nav, 74, forced and "text only, a rule between groups" or "icons, a rule between groups")
     local tb = UI.table(g, { { key = "left", title = "Item", flex = 1, min = 90, sortable = true }, { key = "c2", title = "Each", width = 60, align = "RIGHT", drop = 1 },
       { key = "right", title = "In all", width = 64, align = "RIGHT", sortable = true } }, { selected = function(row) return row.item == 2589 end })
     tb:Layout(250, 86)
@@ -2198,7 +2622,22 @@ function UI.gallery()
       t:SetColorTexture(1, 1, 1, 0.06)
       t:SetAllPoints()
     end
-    put("split", sp, 40, "click the divider's button")
+    put("split", sp, 40, "a rule between two panes")
+    local ch = put("choice", UI.choice(g, "Recipes", { "Trainer only", "Trainer + buyable", "Everything" }, function() return "Trainer + buyable" end, function()
+      return { { title = true, text = "Recipes" }, { radio = true, text = "Trainer only" }, { radio = true, checked = true, text = "Trainer + buyable" }, { radio = true, text = "Everything" } }
+    end, "A labelled dropdown: the label outside, the value inside."), 22, "label + dropdown, as wide as its longest value")
+    ch:Refresh()
+    local tg = put("toggle", UI.toggle(g, "Details", nil, function() return checked end, function(v) checked = v end, "A switch: pressed while on."), 22, "pressed while on")
+    tg:Refresh()
+    local fbar = CreateFrame("Frame", nil, g)
+    fbar:SetSize(250, 52)
+    local fl = UI.flow(fbar, 26)
+    fl:Add(UI.button(fbar, "Plan again", nil, function() end))
+    fl:Add(UI.check(fbar, "Only priced", function() return checked end, function(v) checked = v end))
+    fl:Add(UI.button(fbar, "Copy plan", nil, function() end))
+    fl:Add(UI.search(fbar, 90), { right = true })
+    fl:Layout(250)
+    put("flow", fbar, 52, "rows that wrap; Find at the right end")
     local card = UI.card(g, "A card", { height = 26, fold = true })
     local stp = UI.stepper(card.content, { min = 1, max = 50, step = 1 }, function() return value end, function(v) value = v end)
     stp:SetPoint("TOPLEFT", 4, -2)

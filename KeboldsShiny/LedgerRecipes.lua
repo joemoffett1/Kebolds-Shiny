@@ -39,7 +39,8 @@ local DIM, RED, GOLD, WHITE, GREEN = NS.DIM, NS.RED, NS.GOLD, NS.WHITE, NS.GREEN
 local money, itemName, settings, try = NS.money, NS.itemName, NS.settings, NS.try
 
 local HEADS = { "Recipe", "Learn", "Source", "Chance", "Cost", "Sells for", "Profit", "Per hour", "Worth making", "Total profit" }
-local SHOW = { all = "all", known = "ones I know", learn = "ones I can learn now", skill = "ones that give skill", fav = "favourites" }
+-- What the Show box holds: short, so no value is cut at the smallest window (the menu's tips say the rest).
+local SHOW = { all = "All", known = "Ones I know", learn = "Can learn now", skill = "Gives skill", fav = "Favourites" }
 local MODE_NOTE = { buy = "parts bought", craft = "parts made" }
 local MODE_NAME = { auto = "Cheapest mix", buy = "Buy every part", craft = "Make every part" }
 
@@ -205,8 +206,13 @@ end
 -- The key to the marks of the list, one line.
 local LEGEND = "~ an estimate    * your own choice    \194\187 a favourite    ? not known    (the ? button beside the page's name has this key too)"
 
+-- What the last list said about itself: the footer's count and the tooltip of the footer's line (not rows of the
+-- list any more; the same sentences are still in the model as rows with aside = true, for /kebold print).
+local lastLead, lastAbout = nil, nil
+
 function NS.buildRecipes()
   local S = settings()
+  lastLead, lastAbout = nil, nil
   local WHOLE = NS.scanLabel and NS.scanLabel("whole") or "Scan whole profession"   -- the scan's one name (LedgerEntry.lua)
   local c = NS.state()
   S.prof = c.prof
@@ -286,16 +292,27 @@ function NS.buildRecipes()
     return va < vb
   end)
 
+  -- What the list says about itself is not lines of the list: the count leads the footer's line, the explanation is
+  -- the tooltip of that line and of the ? button, and the recipes the game lists without data are named by the
+  -- section at the end. The rows stay in the model with aside = true, so /kebold print still says it all.
   local out = {}
-  out[#out + 1] = { left = DIM .. string.format("%d of %d %s recipes. Colours, chance and points are at skill %d (the From box); a recipe learned later is judged at its own level.|r",
-    #list, #all, c.prof, c.from),
-    tip = { "Profit, Per hour, Worth making and Total profit use the way of getting the parts that earns the most per hour, unless you chose Buy or Make for a part.",
-      "A recipe not on the cheapest mix says so after its name: parts bought, parts made." } }
+  local ABOUT = {
+    string.format("Colours, chance and points are at skill %d (the From box); a recipe learned later is judged at its own level.", c.from),
+    "Profit, Per hour, Worth making and Total profit use the way of getting the parts that earns the most per hour, unless you chose Buy or Make for a part.",
+    "A recipe not on the cheapest mix says so after its name: parts bought, parts made.",
+  }
+  lastLead = (#list == #all and tostring(#all) or (#list .. " of " .. #all)) .. " " .. c.prof .. " recipes"
+  lastAbout = { lastLead, ABOUT[1], ABOUT[2], ABOUT[3] }
+  out[#out + 1] = { left = DIM .. string.format("%d of %d %s recipes. %s|r", #list, #all, c.prof, ABOUT[1]), aside = true, tip = { ABOUT[2], ABOUT[3] } }
   if #extraAll > 0 then
-    out[#out + 1] = { left = DIM .. #extraAll .. " more recipes are listed by the game and missing from Kebold's data: they are at the end, under Recipes without data.|r" }
+    local more = #extraAll .. " more recipes are listed by the game and missing from Kebold's data: they are at the end, under Recipes without data."
+    lastAbout[#lastAbout + 1] = more
+    out[#out + 1] = { left = DIM .. more .. "|r", aside = true }
   end
   if not c.st.seen then
-    out[#out + 1] = { left = DIM .. "Not one of this character's professions (or its window was never opened here), so nothing is marked as known.|r" }
+    local unseen = "Not one of this character's professions (or its window was never opened here), so nothing is marked as known."
+    lastAbout[#lastAbout + 1] = unseen
+    out[#out + 1] = { left = DIM .. unseen .. "|r", aside = true }
   end
   local unpriced = 0
   for _, f in ipairs(list) do
@@ -412,16 +429,21 @@ local COLUMNS = {
 
 NS.page({ key = "recipes", title = "Craft", order = 2, icon = "Interface\\Icons\\Trade_BlackSmithing",
   tip = { "Craft", "Every recipe of a profession with its cost, what it sells for, its profit and how many are worth making." },
-  plan = true, bars = 1, detail = true, columns = COLUMNS, footer = "plan", marks = { "~", "*", "\194\187", "?" },
+  -- no bar of its own: Show, Only priced and Find follow Recipes and Sells at on the plan bar's second row.
+  -- The footer: the count, the plan's price status, and the whole-profession scan (never "Scan this plan": this
+  -- page has no plan to scan, owner 2026-11-14).
+  plan = true, detail = true, columns = COLUMNS, footer = "plan", footNoScan = true, marks = { "~", "*", "\194\187", "?" },
+  footLead = function() return lastLead end,
+  footTip = function() return lastAbout end,
   empty = { title = "No recipes", text = "Kebold has no recipes for this profession." },
   rows = function() return NS.buildRecipes() end,
   onSort = function(_, _, k) NS.sortBy(k) end,
   selected = function(row) return row.recipe ~= nil and NS.detailRecipe() == row.recipe end,
   build = function(page)
     local at, bar = page.at, page.bar
-    page.dShow = at.put(UI.dropdown(bar, 180, function()
+    page.dShow = at.put(UI.choice(bar, "Show", { SHOW.all, SHOW.known, SHOW.learn, SHOW.skill, SHOW.fav }, function()
       local S = settings()
-      return "Show: " .. SHOW[SHOW[S.show] and S.show or "all"]
+      return SHOW[SHOW[S.show] and S.show or "all"]
     end, function()
       local S = settings()
       local now = SHOW[S.show] and S.show or "all"
@@ -434,25 +456,26 @@ NS.page({ key = "recipes", title = "Craft", order = 2, icon = "Interface\\Icons\
         end }
       end
       return items
-    end, { "Show", "Which recipes are listed." }))
+    end, { "Show", "Which recipes are listed." }), 8)
     page.cPriced = at.put(UI.check(bar, "Only priced", function() return settings().priced and true or false end, function(v)
       settings().priced = v and true or nil
       NS.resetScroll()
       NS.refresh()
-    end, { "Only priced", "Hides recipes with a material that has no scanned or vendor price." }), 8, 104)
-    page.eFind = at.put(UI.search(bar, 140, function(self)
+    end, { "Only priced", "Hides recipes with a material that has no scanned or vendor price." }), 8)
+    page.eFind = at.right(UI.search(bar, 110, function(self)
       local t = self:GetText() or ""
       if t ~= search then
         search = t
         NS.resetScroll()
         NS.refresh()
       end
-    end), 8)
+    end), 6)
     page.eFind:SetMaxLetters(30)
-    local whole = NS.scanLabel and NS.scanLabel("whole") or "Scan whole profession"   -- the scans have one name each (LedgerEntry.lua)
-    page.bScanAll = at.put(NS.scanControl(UI.button(bar, whole, 150, function()
+    -- the footer's right side: the scan this page is about, by its one name (LedgerEntry.lua)
+    local whole = NS.scanLabel and NS.scanLabel("whole") or "Scan whole profession"
+    page.bScanAll = NS.footButton(page, { label = whole, onClick = function()
       NS.scanButton(string.lower(NS.state().prof) .. " all")
-    end, { whole, "Every material, part, product and recipe item of the profession: several minutes. Keep the auction house open while it runs." })), 8)
+    end, tip = { whole, "Every material, part, product and recipe item of the profession: several minutes. Keep the auction house open while it runs." } })
   end,
   paint = function(page)
     local S = settings()
@@ -527,6 +550,13 @@ local function qtyStore()
   return S.panelQty
 end
 
+-- The saved quantity of a recipe as a number, or nil (a saved file edited by hand may hold anything).
+local function savedQty(recipeID)
+  local n = tonumber(qtyStore()[recipeID])
+  if not n or n ~= n then return nil end
+  return max(1, min(QTY_MAX, floor(n + 0.5)))
+end
+
 local function qtyStep(n)
   return n < 20 and 1 or (n < 100 and 10 or (n < 1000 and 50 or 100))
 end
@@ -552,7 +582,7 @@ end
 -- Every line of the pane for one recipe.
 local function buildPanel(r)
   local S = settings()
-  local c = NS.state()
+  local c = NS.state(r.prof)   -- the recipe's own profession, which need not be the one on screen
   local ctx = c.ctx
   local f = figures(c, r)
   local x = f.x
@@ -751,7 +781,7 @@ local function buildPanel(r)
       add({ left = DIM .. why .. "|r" })
     end
     local bands = NS.worthBands(w, x.secs)
-    local qty = store[r.id]
+    local qty = savedQty(r.id)
     if not qty then
       qty = (limit and limit > 0 and limit) or ((bands[1] and bands[1].to ~= huge) and floor(bands[1].to + 1e-9)) or 1
     end
@@ -842,7 +872,7 @@ local function buildPanel(r)
   elseif x.cost ~= nil then
     -- no sale price, so no profit to walk: still a list of what the crafts buy
     head("Buy list", "in all")
-    local qty = max(1, min(QTY_MAX, store[r.id] or 1))
+    local qty = savedQty(r.id) or 1
     add({ left = "Crafts to make", c2 = tostring(qty), right = DIM .. "no sale price|r", qtyRow = true, qty = qty,
       control = { kind = "stepper", get = function() return qty end, set = setQty, min = 1, max = QTY_MAX, tip = { "Crafts to make", "Type a number, or use - and +." } },
       tip = { "Crafts to make", "How many crafts the list below is for." } })
@@ -1059,7 +1089,7 @@ local function fillPanel()
     end
   elseif r then
     ok, list = pcall(buildPanel, r)
-    local c = NS.state()
+    local c = NS.state(r.prof)
     local f = figures(c, r)
     panel.title:SetText("Recipe details")
     panelHeader(r.id, r.made > 0 and r.made or nil, NS.COLOUR[c.ctx.colour(r, f.at)] .. r.name .. "|r",
@@ -1215,8 +1245,12 @@ function NS.detailLayout(page, w, h)
   panel.barW = w - 8
   panel.skill:SetWidth(panel.barW)
   panel.name:SetWidth(w - 56)
-  -- the foot: three buttons and two check boxes in one row (about 334 px), or the check boxes above the buttons
-  local wrap = w < FOOT_WRAP
+  -- the foot: three buttons and two check boxes in one row, or the check boxes above the buttons when the row
+  -- would not fit: worked out from what the buttons and the labelled boxes really take (never under FOOT_WRAP)
+  local favW, skipW = UI.widthOf(panel.cFav), UI.widthOf(panel.cSkip)
+  local rowW = 2 + UI.widthOf(panel.bProf) + 3 + UI.widthOf(panel.bSearch) + 3 + UI.widthOf(panel.bLink) + 6 + favW + 8 + skipW
+  local wrap = w < max(FOOT_WRAP, rowW)
+  panel.footNeed = rowW
   panel.footH = wrap and (FOOT_H + 22) or FOOT_H
   panel.cFav:ClearAllPoints()
   panel.cSkip:ClearAllPoints()
@@ -1225,7 +1259,7 @@ function NS.detailLayout(page, w, h)
   else
     panel.cFav:SetPoint("LEFT", panel.bLink, "RIGHT", 6, 0)
   end
-  panel.cSkip:SetPoint("LEFT", panel.cFav, "RIGHT", 78, 0)   -- past the Favourite label
+  panel.cSkip:SetPoint("LEFT", panel.cFav, "LEFT", favW + 8, 0)   -- past the Favourite label, whatever its font
   panel.list:Layout(w, h - HEAD_H - panel.footH)
 end
 

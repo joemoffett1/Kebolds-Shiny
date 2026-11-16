@@ -5,10 +5,11 @@
 -- It only COUNTS. It never fills a crate, never hands one in, never buys or posts anything: the scan only looks
 -- prices up, "Add to Shopping" only writes a line on Kebold's own shopping list.
 --
--- EVERYTHING ABOUT THE CRATES IS FROM GUIDE SITES OF THE BETA AND HAS NOT BEEN SEEN IN GAME (see Crates.lua):
+-- ALMOST EVERYTHING ABOUT THE CRATES IS FROM GUIDE SITES OF THE BETA AND HAS NOT BEEN SEEN IN GAME (see Crates.lua):
 -- the options and their quantities, the Favor and silver per crate, the level needed, where they are handed in,
--- the crate item ids. Expert Favor is one site's figure (an estimate, ~); Artisan Favor and silver are not known
--- (?) until a Favor value is typed on the Settings page.
+-- the crate item ids. Expert Favor is one site's figure (an estimate, ~). The Artisan reward (20 / 40 Favor, 10s /
+-- 20s) was seen in game on 2026-11-15 (tier.seen). A tier whose reward the data lacks is shown with ?: its silver
+-- counts as 0 and it has no per point figure.
 --
 -- ---- how a crate is costed -------------------------------------------------------------------------------------------
 -- N = the "Crates" stepper (how many of EACH crate are priced, 1 by default). For every option of a crate:
@@ -30,27 +31,27 @@
 --   per point with crate = the same with the crate itself bought on the auction house (its own supply walk over N)
 --   expected Favor       = Favor x (1 + 0.05 x Performance Bonus rank)   (a 5% chance a rank of double Favor)
 -- Assumed: what is in the bags is NOT taken off the cost (it is worth what it sells for; "Have it" says otherwise);
--- an unknown silver reward (Artisan) counts as 0; the 50 Favor of the first hand-in ever is not counted.
+-- an unknown silver reward counts as 0; the 50 Favor of the first hand-in ever is not counted.
 --
 -- ---- API ---------------------------------------------------------------------------------------------------------------
 -- NS.crateList() -> the crates (Crates.lua's list)      NS.crateLabel(crate) -> "Apprentice Ingots"
--- NS.crateReward(crate) -> favor (nil: not known), silver (nil: not known), est, typed
+-- NS.crateReward(crate) -> favor (nil: not known), silver (nil: not known), est, seen (seen in game)
 -- NS.cratePerf() -> the Performance Bonus rank counted, and whether it was typed in
 -- NS.crateFigures(crate [, n]) -> { n, options = { { i, item, qty, units, bags, buy, short, got, listed, scanned,
 --     make, makeProf, known, canMake, pick, cost, how = "buy"|"make"|"have", top, vend, pp, doubt, guess }, ... },
 --     best = index of the cheapest option | nil, cost, how, favor (expected, all n), favor1 (one crate), base, est,
---     typed, silver (all n; 0 when not known), silverKnown, pp, crateCost, crateEach, crateFirst, crateListed,
+--     seen, silver (all n; 0 when not known), silverKnown, pp, crateCost, crateEach, crateFirst, crateListed,
 --     crateShort, crateScanned, ppWith, held, total (crate + fill - silver back, all n; the fill alone when
 --     noCrate), totalFill (fill - silver back, all n), ppFill, net (= total, only with a Favor value) }
 -- NS.crateRows() -> the page's rows, title              NS.crateDetail(crateID) -> the pane's rows
 -- NS.crateStatus() -> the page's one status line        NS.crateScanIDs() -> every option item, then the 30 crates
--- NS.crateOptions() -> the three settings (Settings page and its model)      NS.setCrateOpt(key, value)
+-- NS.crateOptions() -> the one setting (Settings page and its model)         NS.setCrateOpt(key, value)
 -- NS.crateSelect(id) / NS.crateSelected() / NS.crateChoose(id, option index) / NS.crateFind(text) /
 -- NS.crateSortBy(column) / NS.crateAddToShop(id) / NS.crateFacts(itemID) (the tooltip's lines)
 --
 -- ---- saved (with Kebold's other settings; NOT engine options, the engine never sees them) -------------------
 -- S.crates = { perf = Performance Bonus rank typed in (nil: your own, read from the game; 0 for a profile),
---   artRaw / artGoods = Favor of an Artisan raw / goods crate typed in (nil: not known),
+--   (artRaw / artGoods, the Artisan Favor typed in before it was seen in game, are cleared when read),
 --   n = how many of each crate are priced, tier = 1..4 (nil: all), held, priced = the two filters,
 --   sort = the sorted column's key ("name", "tier", "favor", "reward", "fill", "cost", "crate", "pp", "total",
 --   "totalFill"; a number is the column of the nine-column list before 2026-11-13 and is read as its key), desc }
@@ -97,6 +98,10 @@ end
 local function store()
   local S = settings()
   if type(S.crates) ~= "table" then S.crates = {} end
+  -- a tier the data does not have (a saved file edited by hand, or an older one): no filter
+  if S.crates.tier ~= nil and type(C.tiers[S.crates.tier]) ~= "table" then S.crates.tier = nil end
+  -- the Artisan Favor used to be typed in; it is in the data since it was seen in game (2026-11-15)
+  S.crates.artRaw, S.crates.artGoods = nil, nil
   return S.crates
 end
 
@@ -116,34 +121,26 @@ function NS.cratePerf()
 end
 
 -- Favor and silver of one sealed crate: favor (nil when not known), silver in copper (nil when not known),
--- est (one site's beta figure), typed (the Favor was typed in on the Settings page).
+-- est (one site's beta figure), seen (the tier's reward was seen in game).
 function NS.crateReward(c)
   local t = tierOf(c)
   local k = c.goods and t.goods or t.raw
-  local favor, typed = k.favor, false
-  if favor == nil then
-    local v = tonumber(store()[c.goods and "artGoods" or "artRaw"])
-    if v and v > 0 then favor, typed = v, true end
-  end
-  return favor, k.silver, t.est == true, typed
+  if type(k) ~= "table" then k = {} end
+  return k.favor, k.silver, t.est == true, t.seen == true
 end
 
--- The three settings, for the Settings page and its model. Each: key, label, hint, tip, min, max, get() -> the
+-- Where a crate's reward figures come from, as a sentence for tooltips and the pane.
+local SRC_SITES = "From guide sites of the beta; not seen in game."
+local function sourceNote(f)
+  if f.seen then return "The Favor and the silver back were seen in game; the rest is from guide sites of the beta." end
+  return SRC_SITES
+end
+
+-- The one setting, for the Settings page and its model. Each: key, label, hint, tip, min, max, get() -> the
 -- value counted, set(v), changed() -> typed in, text() -> what the model's line says.
 local OPTIONS
 function NS.crateOptions()
   if OPTIONS then return OPTIONS end
-  local function art(key, label, kind)
-    return { key = key, label = label, min = 0, max = 999, w = 40,
-      hint = "0 = not known (?): no per point figure",
-      tip = "What one sealed Artisan " .. kind .. " crate gives in Merchant's Favor. The guide sites do not say: type what the game shows once you have handed one in. 0 puts it back to not known, and those crates then have no per point figure.",
-      get = function() return tonumber(store()[key]) or 0 end,
-      changed = function() return store()[key] ~= nil end,
-      text = function()
-        local v = tonumber(store()[key])
-        return v and (GOLD .. v .. " Favor|r") or (DIM .. "not known|r")
-      end }
-  end
   OPTIONS = {
     { key = "perf", label = "Performance Bonus rank (Legacy)", min = 0, max = C.perfMax, w = 30,
       hint = "0 to 3: a 5% chance a rank of double Favor",
@@ -156,8 +153,6 @@ function NS.crateOptions()
         if not typed and found ~= true and not NS.who() then return DIM .. "not read from the game: type your rank|r" end
         return (typed and GOLD or "") .. v .. " of " .. C.perfMax .. (typed and "|r" or "")
       end },
-    art("artRaw", "Artisan crate Favor (raw)", "raw (Herbs, Ore, Textiles, Curiosities)"),
-    art("artGoods", "Artisan crate Favor (goods)", "goods (Fabrics, Ingots, Parts)"),
   }
   for _, o in ipairs(OPTIONS) do
     o.set = function(v) NS.setCrateOpt(o.key, v) end
@@ -165,8 +160,8 @@ function NS.crateOptions()
   return OPTIONS
 end
 
--- perf: 0..3, forgotten when it equals the rank read from the game. artRaw / artGoods: a Favor value, 0 or nil
--- = not known again. n: how many of each crate are priced.
+-- perf: 0..3, forgotten when it equals the rank read from the game. n: how many of each crate are priced. Any
+-- other key (the old artRaw / artGoods too) is ignored.
 function NS.setCrateOpt(key, value)
   local st = store()
   local v = tonumber(value)
@@ -177,9 +172,6 @@ function NS.setCrateOpt(key, value)
       if v == own then v = nil end
     end
     st.perf = v
-  elseif key == "artRaw" or key == "artGoods" then
-    if v then v = floor(v + 0.5) end
-    st[key] = (v and v > 0) and min(999, v) or nil
   elseif key == "n" then
     v = v and max(1, min(MAX_N, floor(v + 0.5))) or 1
     st.n = v ~= 1 and v or nil
@@ -256,9 +248,9 @@ function NS.crateFigures(c, n)
     f.options[i] = e
     if e.cost ~= nil and (f.cost == nil or e.cost < f.cost) then f.best, f.cost, f.how = i, e.cost, e.how end
   end
-  local base, silver, est, typed = NS.crateReward(c)
+  local base, silver, est, seen = NS.crateReward(c)
   local rank = NS.cratePerf()
-  f.base, f.est, f.typed, f.rank = base, est, typed, rank
+  f.base, f.est, f.seen, f.rank = base, est, seen, rank
   f.favor1 = base and base * (1 + C.perfStep * rank) or nil
   f.favor = f.favor1 and f.favor1 * n or nil
   f.silverKnown = silver ~= nil
@@ -349,7 +341,7 @@ end
 -- A whole amount (Total cost, Fill only): the same marks as a per point figure.
 local amountText = ppText
 
--- The silver one sealed crate pays back: "5s", "~7s 50c" (Expert: one site's figure), "?" (Artisan: not known).
+-- The silver one sealed crate pays back: "5s", "~7s 50c" (Expert: one site's figure), "?" (not known).
 local function rewardText(f)
   if not f.silverKnown then return RED .. "?|r" end
   return (f.est and "~" or "") .. money(f.silver1)
@@ -357,7 +349,7 @@ end
 
 local function favorText(f)
   if not f.favor1 then return RED .. "?|r" end
-  return (f.est and "~" or "") .. numText(f.favor1) .. (f.typed and (GOLD .. "*|r") or "")
+  return (f.est and "~" or "") .. numText(f.favor1)
 end
 
 local PICK_NOTE = { have = " have it", buy = " buy", craft = " make" }
@@ -411,7 +403,7 @@ NS.crateHandIn = handIn
 -- Rows: { cols = { Crate (+ " (2)" when 2 are held), Tier, Favor, Reward, Fill with, Cost to fill, Crate cost, Per
 --   point, Total cost, Fill only }, item = the crate's item id, crate = the same, action (a click selects it), menu =
 --   true, shopMenu, tip, and the numbers: tier, favor (expected, one crate), silver (one crate; nil: not known), est,
---   typed, fill = the cheapest option's index, fillItem, fillQty, how, cost, pp, ppFill, total, totalFill, crateEach,
+--   seen, fill = the cheapest option's index, fillItem, fillQty, how, cost, pp, ppFill, total, totalFill, crateEach,
 --   ppWith, held, n }; or one row with `empty` (shown as the empty state).
 -- Cost to fill, Total cost and Fill only are for ALL the crates priced (the Crates box); Favor, Reward and Crate
 -- cost are one crate's; Per point is per point.
@@ -632,7 +624,7 @@ function NS.crateRows()
         tip[#tip + 1] = "Favor " .. numText(f.base) .. (f.rank > 0 and (", " .. numText(f.favor1) .. " expected with Performance Bonus " .. f.rank) or "")
           .. (f.silverKnown and (", and " .. NS.plain(money(f.silver1)) .. " back") or ", silver back not known (counted as 0)") .. "."
       else
-        tip[#tip + 1] = RED .. "Artisan Favor is not known|r: no per point figure until a value is typed on the Settings page (Waylaid crates)."
+        tip[#tip + 1] = RED .. "The Favor of this crate is not known|r: no per point figure."
       end
       if f.est then tip[#tip + 1] = DIM .. "~ Expert Favor is one guide site's figure from the beta: an estimate.|r" end
       if n > 1 then tip[#tip + 1] = "Priced for " .. n .. " of this crate: the cost is of all " .. n .. ", and thin listings raise it." end
@@ -647,7 +639,7 @@ function NS.crateRows()
           .. ". Fill only" .. of .. " (fill - silver back, a crate you already hold): " .. NS.plain(amountText(f.totalFill, f.est)) .. "."
       end
       if f.held > 0 then tip[#tip + 1] = GREEN .. "You hold " .. f.held .. " of this crate.|r" end
-      tip[#tip + 1] = DIM .. "From guide sites of the beta; not seen in game.|r"
+      tip[#tip + 1] = DIM .. sourceNote(f) .. "|r"
       tip[#tip + 1] = "Click for every option. " .. GOLD .. "Right-click|r for the menu."
     end
     out[#out + 1] = { cols = {
@@ -662,8 +654,10 @@ function NS.crateRows()
         amountText(f.total, f.est, f.noCrate),
         amountText(f.totalFill, f.est),
       }, item = c.id, crate = c.id, menu = true, tip = tip,
-      action = function() NS.crateSelect(c.id) end,
-      tier = c.tier, favor = f.favor1, est = f.est, typed = f.typed, fill = f.best, fillItem = best and best.item or nil, fillQty = best and best.qty or nil,
+      action = function(button)   -- a click on the open crate closes the pane (NS.detailClick)
+        if not NS.detailClick(selID == c.id, button) then NS.crateSelect(c.id) end
+      end,
+      tier = c.tier, favor = f.favor1, est = f.est, seen = f.seen, fill = f.best, fillItem = best and best.item or nil, fillQty = best and best.qty or nil,
       silver = f.silverKnown and f.silver1 or nil, total = f.total, totalFill = f.totalFill,
       how = f.how, cost = f.cost, pp = f.pp, ppFill = f.ppFill, noCrate = f.noCrate, net = f.net, crateEach = f.crateEach, ppWith = f.ppWith, held = f.held, n = n }
   end
@@ -677,8 +671,9 @@ function NS.crateRows()
   local missing = 0
   for _, x in ipairs(list) do if x.f.pp ~= nil and x.f.noCrate then missing = missing + 1 end end
   if missing > 0 then notes[#notes + 1] = "+? " .. missing .. " without a price for the crate itself (scan the crate materials)." end
-  local art = (store().artRaw and 1 or 0) + (store().artGoods and 1 or 0)
-  notes[#notes + 1] = "~ Expert Favor is an estimate" .. (art < 2 and "; ? Artisan Favor is not known (Settings)" or "") .. "; all of it is from guide sites, not seen in game."
+  local unknown = 0
+  for _, x in ipairs(list) do if x.f.favor1 == nil then unknown = unknown + 1 end end
+  notes[#notes + 1] = "~ Expert Favor is an estimate" .. (unknown > 0 and ("; ? the Favor of " .. unknown .. " is not known") or "") .. "; the Artisan reward was seen in game, the rest is from guide sites."
   lastStatus = string.format("%d of %d crates shown, %d priced%s. ", #list, #C.list, lastCounts.priced, n > 1 and (", " .. n .. " of each") or "") .. table.concat(notes, " ")
   return out, "Crates"
 end
@@ -748,8 +743,8 @@ function NS.crateDetail(id)
   add({ key = "favor", left = "Merchant's Favor", right = f.favor1 and (favorText(f) .. ((f.rank > 0) and (DIM .. "  (" .. numText(f.base) .. " x " .. numText(1 + C.perfStep * f.rank) .. ")|r") or "")) or (RED .. "? not known|r"),
     tip = { f.favor1 and ((c.goods and "A goods crate (Fabrics, Ingots, Parts): double Favor." or "A raw crate (Herbs, Ore, Textiles, Curiosities).")
         .. (f.rank > 0 and (" Performance Bonus rank " .. f.rank .. ": a " .. 5 * f.rank .. "% chance of double Favor, so " .. numText(f.favor1) .. " on average.") or ""))
-        or "The guide sites do not say what an Artisan crate gives. Type the value on the Settings page (Waylaid crates) once the game has shown it.",
-      f.est and "~ one guide site's figure from the beta: an estimate." or (f.typed and "* typed in on the Settings page." or "From guide sites of the beta; not seen in game.") } })
+        or "What this crate gives is not known: it has no per point figure.",
+      f.est and "~ one guide site's figure from the beta: an estimate." or (f.seen and "Seen in game." or SRC_SITES) } })
   add({ key = "silver", left = "Reward (silver back)", right = f.silverKnown and rewardText(f) or (RED .. "?|r" .. DIM .. " counted as 0|r") })
   add({ key = "level", left = "Needs level", right = tostring(t.level) })
   add({ key = "first", left = DIM .. "Your first hand-in ever: +" .. C.firstFavor .. " Favor once (Shipping Label).|r" })
@@ -799,7 +794,7 @@ function NS.crateDetail(id)
     if e.doubt then add({ key = "doubt", left = RED .. "? |r" .. DIM .. e.doubt .. "|r", item = e.item, tip = { e.doubt } }) end
   end
   if f.est then add({ key = "note", left = DIM .. "~ Expert Favor and reward: one site's beta figures.|r", est = true }) end
-  add({ key = "note", left = DIM .. "From guide sites of the beta; not seen in game.|r" })
+  add({ key = "note", left = DIM .. (f.seen and "Favor and reward: seen in game. The rest: guide sites of the beta." or SRC_SITES) .. "|r", seen = f.seen })
   add({ key = "note", left = DIM .. "Kebold only counts: it never fills or hands in a crate.|r" })
   return out
 end
@@ -833,7 +828,7 @@ local function crateFacts(id)
     out[#out + 1] = { label = "Cheapest fill", value = best and (optName(best) .. ", " .. money(f.cost)) or (DIM .. "not priced|r"),
       text = best and ("Cheapest fill: " .. optName(best) .. " for " .. money(f.cost)) or "Cheapest fill: not priced (scan the crate materials)" }
     out[#out + 1] = { label = "Favor", value = favorText(f) .. DIM .. " (" .. NS.crateLabel(c) .. ")|r",
-      text = "Favor: " .. (f.favor1 and ((f.est and "~" or "") .. numText(f.favor1)) or "? (not known)") .. " (" .. NS.crateLabel(c) .. ", from guide sites)" }
+      text = "Favor: " .. (f.favor1 and ((f.est and "~" or "") .. numText(f.favor1)) or "? (not known)") .. " (" .. NS.crateLabel(c) .. (f.seen and ", seen in game)" or ", from guide sites)") }
     if f.favor1 then
       out[#out + 1] = { label = "A point costs", value = ppText(f.pp, f.est, f.noCrate), text = f.pp ~= nil and ("A point costs " .. NS.plain(ppText(f.pp, f.est, f.noCrate))) or nil }
     end
@@ -884,9 +879,9 @@ local COLUMNS = {
     tip = { "Crate", "The 30 Waylaid Crates by tier and kind (the game's own names are not known yet). Sorted by this column they are in the guide's order.", "(2): you hold two of this crate (bags and bank)." } },
   { key = KEYS[2], title = HEADS[2], width = 48, sortable = true, drop = 9 },
   { key = KEYS[3], title = HEADS[3], width = 34, align = "RIGHT", sortable = true, drop = 7,
-    tip = { "Favor", "Merchant's Favor of one sealed crate, with your Performance Bonus counted in.", "~ an estimate (Expert: one site's beta figure). ? not known (Artisan). * typed in on the Settings page." } },
+    tip = { "Favor", "Merchant's Favor of one sealed crate, with your Performance Bonus counted in.", "~ an estimate (Expert: one site's beta figure). ? not known. Artisan: seen in game." } },
   { key = KEYS[4], title = HEADS[4], width = 44, align = "RIGHT", sortable = true, drop = 8,
-    tip = { "Reward", "The silver the hand-in of one sealed crate pays back.", "~ an estimate (Expert: one site's beta figure). ? not known (Artisan): counted as 0." } },
+    tip = { "Reward", "The silver the hand-in of one sealed crate pays back.", "~ an estimate (Expert: one site's beta figure). ? not known: counted as 0. Artisan: seen in game." } },
   { key = KEYS[5], title = HEADS[5], flex = 1, min = 78, sortable = true, drop = 1,
     tip = { "Fill with", "The cheapest of the crate's options: the quantity and the item to put in. made: cheaper made than bought. A gold * marks your own choice for that item." } },
   { key = KEYS[6], title = HEADS[6], width = 60, align = "RIGHT", sortable = true, drop = 4,
@@ -1011,18 +1006,14 @@ function NS.favorView(v)
   return viewKey()
 end
 
--- The Crates view's controls, on the bar's second row. Returns them, so the page can hide them on the other view.
-local function buildCrateBar(pg, at0, bar)
-  local made = {}
-  local at = { put = function(w, ...)
-    made[#made + 1] = w
-    return at0.put(w, ...)
-  end, label = function(...)
-    local fs = at0.label(...)
-    made[#made + 1] = fs
-    return fs
-  end }
-  pg.dTier = at.put(UI.dropdown(bar, CR.tierW, function()
+-- The Crates view's controls, on the bar's second row: its filters, how many crates, then Find at the right end.
+-- `at` places and shows them only on this view.
+local function buildCrateBar(pg, at, bar)
+  pg.dTier = at.put(UI.choice(bar, "Tier", function()
+    local list = { "All tiers" }
+    for _, t in ipairs(C.tiers) do list[#list + 1] = t.name end
+    return list
+  end, function()
     local t = store().tier
     return t and C.tiers[t].name or "All tiers"
   end, function()
@@ -1041,18 +1032,18 @@ local function buildCrateBar(pg, at0, bar)
       end }
     end
     return items
-  end, { "Tier", "All 30 crates, or the ones of one tier." }))
+  end, { "Tier", "All 30 crates, or the ones of one tier." }), 8)
   pg.cHeld = at.put(UI.check(bar, "Only crates I hold", function() return store().held and true or false end, function(v)
     store().held = v and true or nil
     NS.resetScroll()
     NS.refresh()
-  end, { "Only crates I hold", "Only the crates in your bags and bank." }), 4, CR.heldW)
+  end, { "Only crates I hold", "Only the crates in your bags and bank." }), 8)
   pg.cPriced = at.put(UI.check(bar, "Only priced", function() return store().priced and true or false end, function(v)
     store().priced = v and true or nil
     NS.resetScroll()
     NS.refresh()
-  end, { "Only priced", "Hides crates without a per point figure: no option has a price, or the crate's Favor is not known." }), 4, CR.pricedW)
-  pg.eFind = at.put(UI.search(bar, CR.findW, function(self)
+  end, { "Only priced", "Hides crates without a per point figure: no option has a price, or the crate's Favor is not known." }), 10)
+  pg.eFind = at.right(UI.search(bar, CR.findW, function(self)
     local t = self:GetText() or ""
     if t ~= search then
       search = t
@@ -1061,21 +1052,15 @@ local function buildCrateBar(pg, at0, bar)
     end
   end), 6)
   pg.eFind:SetMaxLetters(30)
-  pg.lCount = at.label("Crates", CR.nLabelW)
+  pg.lCount = at.label("Crates")
   pg.sCount = at.put(UI.stepper(bar, { min = 1, max = MAX_N, step = 1, w = CR.nBoxW,
     tip = { "Crates", "How many of EACH crate are priced. Cost to fill, Total cost and Fill only are then of all of them, so the per point figure shows the prices moving as the cheap listings run out." } },
     function() return countN() end, function(v) NS.setCrateOpt("n", v) end), 4)
+  -- the footer's right side while this view shows: the crates' scan (Quick scan beside it is the page's)
   local label = NS.scanLabel and NS.scanLabel("crates") or "Scan crate materials"
-  pg.bScan = at.put(NS.scanControl(UI.button(bar, label, CR.scanW, function() NS.scanButton("crates") end,
-    { label, SCAN_TIP, "It only looks prices up: nothing is bought." })), 4)
-  if type(KeboldsShinyScan_HasQuick) == "function" then
-    local quick = NS.scanLabel("quick")
-    pg.bQuick = at.put(NS.scanControl(UI.button(bar, quick, CR.quickW, function() NS.scanButton("quick") end,
-      { quick, "The whole auction house in one request: the crates and what they take, among everything else Kebold knows.",
-        "The game allows it once per 15 minutes; when the server does not answer it reads gear only.", "It only looks prices up: nothing is bought." }),
-      NS.quickWhy), 4)
-  end
-  return made
+  pg.bScan = NS.footButton(pg, { label = label, onClick = function() NS.scanButton("crates") end,
+    when = function() return viewKey() == "crates" end,
+    tip = { label, SCAN_TIP, "It only looks prices up: nothing is bought." } })
 end
 
 NS.favorViews.crates = { key = "crates", title = "Crates", columns = COLUMNS,
@@ -1108,6 +1093,7 @@ NS.FV = FV
 page = NS.page({ key = "crates", title = "Merchant's Favor", order = 2.75, icon = ICON,
   tip = { "Merchant's Favor", "Waylaid Crates: what a point of Merchant's Favor costs. Craftsman's Writs: what a point of reputation costs." },
   bars = 2, detail = true, columns = COLUMNS, marks = { "~", "*", "?" },
+  barKey = function() return viewKey() end,   -- the second row's controls are the showing view's: placed again when it changes
   empty = { icon = ICON, title = "Nothing to show", text = "Nothing matches." },
   rows = function() return viewNow().rows() end,
   -- the view's own columns; its caption row is the sentence beside the two buttons, not a line of the list
@@ -1160,17 +1146,35 @@ page = NS.page({ key = "crates", title = "Merchant's Favor", order = 2.75, icon 
     for _, key in ipairs(VIEW_ORDER) do
       local v = NS.favorViews[key]
       if type(v) == "table" then
-        local vat = key == "crates" and at or NS.placer(bar)
+        local vat, made = at.sub(function() return viewKey() == key end)
         vat.row(2)
-        pg.viewWidgets[key] = v.build(pg, vat, bar) or {}
+        v.build(pg, vat, bar)
+        pg.viewWidgets[key] = made
         pg.viewAt[key] = vat
         pg.panes[key] = v.pane(pg, pg.split.right)
       end
     end
+    -- the footer's right side: the showing view's own scan (made by the view), and Quick scan beside it
+    if type(KeboldsShinyScan_HasQuick) == "function" then
+      local quick = NS.scanLabel("quick")
+      pg.bQuick = NS.footButton(pg, { label = quick, onClick = function() NS.scanButton("quick") end, why = NS.quickWhy,
+        tip = { quick, "The whole auction house in one request: the crates and what they take, the writs and what they ask for, among everything else Kebold knows.",
+          "The game allows it once per 15 minutes; when the server does not answer it reads gear only.", "It only looks prices up: nothing is bought." } })
+      pg.bWritQuick = pg.bQuick   -- one button for both views
+    end
   end,
   layout = function(pg, w)
     local s = pg.split
-    if type(pg.caption) == "table" then pg.caption:SetWidth(max(100, w - pg.captionX - 4)) end
+    if type(pg.caption) == "table" then
+      -- the sentence starts after the last view button, wherever the Row size put it
+      local last = pg.seg[VIEW_ORDER[#VIEW_ORDER]] and pg.at.flow:Where(pg.seg[VIEW_ORDER[#VIEW_ORDER]]) or nil
+      if last then
+        pg.captionX = last.x + last.got + 10
+        pg.caption:ClearAllPoints()
+        pg.caption:SetPoint("TOPLEFT", pg.bar, "TOPLEFT", pg.captionX, -7)
+      end
+      pg.caption:SetWidth(max(100, w - pg.captionX - 4))
+    end
     if type(s) == "table" and s.rightW > 0 and type(pg.panes) == "table" then
       for _, p in pairs(pg.panes) do p:Layout(s.rightW, s.h) end
     end

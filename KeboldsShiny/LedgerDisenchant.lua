@@ -317,7 +317,8 @@ end
 
 -- ---- the log: watching your own disenchants ---------------------------------------------------------------------------
 
-local pend = { start = false, target = false, done = false, item0 = false, cast = false, item = false, itemAt = 0, src = false, name = false, nameAt = 0 }
+local pend = { start = false, target = false, done = false, item0 = false, cast = false, item = false, itemAt = 0, src = false, name = false, nameAt = 0,
+  empty = false }   -- empty: a loot window came up for this cast with no item in it yet
 local byName   -- lower-case name -> item id, for the things recipes make
 
 local function spellName(id)
@@ -468,7 +469,7 @@ local function onEvent(event, a1, a2, a3, a4)
         end
       end
       local item = pend.target or recentTouch(TOUCH_WINDOW + 6) or false   -- no START seen: a bag item touched just before
-      pend.done, pend.item0 = t, item
+      pend.done, pend.item0, pend.empty = t, item, false
       pend.start, pend.target = false, false
       dlog("succeeded, item " .. tostring(item) .. " cast " .. tostring(pend.cast))
     end
@@ -476,15 +477,24 @@ local function onEvent(event, a1, a2, a3, a4)
     if pend.done and now() - pend.done <= LOOT_WINDOW then
       local loot = readLoot()
       if #loot == 0 then
+        -- LOOT_READY can come before the window is filled: LOOT_OPENED of the same window follows. The cast stays
+        -- waiting only until that window closes (LOOT_CLOSED below), so another window is never taken for it.
+        pend.empty = true
         dlog(event .. " with no item in the loot window yet")
         return
       end
       local item = pend.item0 or nil
-      pend.done, pend.item0 = false, false
+      pend.done, pend.item0, pend.empty = false, false, false
       record(item, loot)
     elseif pend.done then
-      pend.done, pend.item0 = false, false
+      pend.done, pend.item0, pend.empty = false, false, false
       dlog(event .. " too long after the cast: not counted")
+    end
+  elseif event == "LOOT_CLOSED" then
+    -- the window that came up for the cast closed without showing an item: the cast is not waited for any longer
+    if pend.done and pend.empty then
+      pend.done, pend.item0, pend.empty = false, false, false
+      dlog("LOOT_CLOSED: the loot window showed no item, the cast is not counted")
     end
   end
 end
@@ -499,7 +509,7 @@ do
   local watcher = CreateFrame("Frame")
   watcher:SetScript("OnEvent", function(_, event, ...) NS.deEvent(event, ...) end)
   for _, event in ipairs({ "UNIT_SPELLCAST_SENT", "UNIT_SPELLCAST_START", "UNIT_SPELLCAST_SUCCEEDED", "UNIT_SPELLCAST_FAILED",
-    "UNIT_SPELLCAST_INTERRUPTED", "LOOT_READY", "LOOT_OPENED" }) do
+    "UNIT_SPELLCAST_INTERRUPTED", "LOOT_READY", "LOOT_OPENED", "LOOT_CLOSED" }) do
     pcall(watcher.RegisterEvent, watcher, event)
   end
   -- Which bag item a spell was put on: post-hooks only, on functions that exist; nothing is replaced or called.
@@ -891,7 +901,9 @@ function NS.deRows()
         signed(e.profit), e.ph and signed(e.ph) or (DIM .. "-|r"),
         outlet(e.vend, "vendor"), outlet(e.ah, "ah"),
       }, item = r.made, recipe = r.id, deRecipe = r.id, prof = e.prof, menu = true, tip = tip,
-      action = function() NS.deSelect(r.id) end,
+      action = function(button)   -- a click on the open recipe closes the pane (NS.detailClick)
+        if not NS.detailClick(selID == r.id, button) then NS.deSelect(r.id) end
+      end,
       sellStep = S.sales ~= "off" and r.made or nil,
       value = e.value, known = e.known, cost = e.cost, profit = e.profit, ph = e.ph, vend = e.vend, ah = e.ah,
       est = o.est, band = o.band, best = e.best, can = e.can }
@@ -1101,7 +1113,11 @@ page = NS.page({ key = "disenchant", title = "Disenchant", order = 2.5, icon = I
   footer = function() return lastStatus end,
   build = function(pg)
     local at, bar = pg.at, pg.bar
-    pg.dProf = at.put(UI.dropdown(bar, DE.profW, function()
+    pg.dProf = at.put(UI.choice(bar, "Profession", function()
+      local list = { "All professions" }
+      for _, p in ipairs(NS.data().profs) do list[#list + 1] = p end
+      return list
+    end, function()
       return settings().deProf or "All professions"
     end, function()
       local now_ = settings().deProf
@@ -1119,35 +1135,35 @@ page = NS.page({ key = "disenchant", title = "Disenchant", order = 2.5, icon = I
         end }
       end
       return items
-    end, { "Profession", "Gear of all nine professions in one list, or of one." }))
+    end, { "Profession", "Gear of all nine professions in one list, or of one." }), 8)
     pg.cMine = at.put(UI.check(bar, "Only ones I can make", function() return settings().deMine and true or false end, function(v)
       settings().deMine = v and true or nil
       NS.resetScroll()
       NS.refresh()
-    end, { "Only ones I can make", "Only recipes this character knows (as read when the profession's window was last open)." }), 8, DE.mineW)
+    end, { "Only ones I can make", "Only recipes this character knows (as read when the profession's window was last open)." }), 8)
     pg.cPriced = at.put(UI.check(bar, "Only priced", function() return settings().dePriced and true or false end, function(v)
       settings().dePriced = v and true or nil
       NS.resetScroll()
       NS.refresh()
-    end, { "Only priced", "Hides recipes without a profit figure: a material of the craft, or one the disenchant can give, has no price." }), 8, DE.pricedW)
-    pg.eFind = at.put(UI.search(bar, DE.findW, function(self)
+    end, { "Only priced", "Hides recipes without a profit figure: a material of the craft, or one the disenchant can give, has no price." }), 8)
+    pg.eFind = at.right(UI.search(bar, DE.findW, function(self)
       local t = self:GetText() or ""
       if t ~= search then
         search = t
         NS.resetScroll()
         NS.refresh()
       end
-    end), 8)
+    end), 6)
     pg.eFind:SetMaxLetters(30)
+    -- the footer's right side: this page's scan, and Quick scan beside it
     local label = NS.scanLabel and NS.scanLabel("de") or "Scan disenchant materials"
-    pg.bScan = at.put(NS.scanControl(UI.button(bar, label, DE.scanW, function() NS.scanButton("de") end,
-      { label, SCAN_TIP, "It only looks prices up: nothing is bought." })), 8)
+    pg.bScan = NS.footButton(pg, { label = label, onClick = function() NS.scanButton("de") end,
+      tip = { label, SCAN_TIP, "It only looks prices up: nothing is bought." } })
     if type(KeboldsShinyScan_HasQuick) == "function" then
       local quick = NS.scanLabel("quick")
-      pg.bQuick = at.put(NS.scanControl(UI.button(bar, quick, DE.quickW, function() NS.scanButton("quick") end,
-        { quick, "The whole auction house in one request: the gear on this page and the materials a disenchant gives, among everything else Kebold knows.",
-          "The game allows it once per 15 minutes; when the server does not answer it reads gear only.", "It only looks prices up: nothing is bought." }),
-        NS.quickWhy), 6)
+      pg.bQuick = NS.footButton(pg, { label = quick, onClick = function() NS.scanButton("quick") end, why = NS.quickWhy,
+        tip = { quick, "The whole auction house in one request: the gear on this page and the materials a disenchant gives, among everything else Kebold knows.",
+          "The game allows it once per 15 minutes; when the server does not answer it reads gear only.", "It only looks prices up: nothing is bought." } })
     end
     pg.pane = buildPane(pg.split.right)
   end,

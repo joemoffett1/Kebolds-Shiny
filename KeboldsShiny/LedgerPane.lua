@@ -216,14 +216,14 @@ local function createPane(form)
     else
       NS.toggle()
     end
-  end, { "Kebold's Shiny", "Left-click: open or close Kebold.", "Right-click: scans and tabs." })
+  end, { "Kebold's Shiny", "Left-click: open or close Kebold.", "Right-click: scans and tabs." }, true)   -- exactly PANE.ledgerW: the Scan button sits beside it by that number
   f.ledger:RegisterForClicks("LeftButtonUp", "RightButtonUp")
   f.ledger:SetHeight(PANE.buttonH)
   f.ledger:SetPoint("BOTTOMLEFT", 0, 0)
   f.scan = UI.button(f, "Scan", PANE.scanW, function()
     local id = pane and pane.recipe
     if id and NS.paneScanState(id) and NS.scanRecipe then NS.scanRecipe(id) end
-  end, function() return (select(2, NS.paneScanState(pane and pane.recipe))) end)
+  end, function() return (select(2, NS.paneScanState(pane and pane.recipe))) end, true)
   f.scan:SetHeight(PANE.buttonH)
   -- a disabled button must still show why it is disabled
   if type(f.scan.SetMotionScriptsWhileDisabled) == "function" then pcall(f.scan.SetMotionScriptsWhileDisabled, f.scan, true) end

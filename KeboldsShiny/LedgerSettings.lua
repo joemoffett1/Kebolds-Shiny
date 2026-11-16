@@ -90,6 +90,15 @@ function NS.setOpt(key, value)
   NS.refresh()
 end
 
+-- "Reset all numbers": every number this page's list owns goes back to its default, in place. What else lives in
+-- S.opts (Count gear at disenchant value, the Route settings' most to pay for a point) is not this button's.
+function NS.resetOpts()
+  local opts = settings().opts
+  for _, o in ipairs(OPTIONS) do opts[o.key] = nil end
+  NS.bump()
+  NS.refresh()
+end
+
 local function optStep(o, dir)
   local v = optValue(o)
   if o.values then
@@ -256,7 +265,7 @@ function NS.buildSettings()
   -- Waylaid crates (LedgerCrates.lua): not engine options, kept under S.crates
   if NS.crateOptions then
     add({ left = "" })
-    add({ left = GOLD .. "Waylaid crates|r  " .. DIM .. "from guide sites of the beta, not seen in game|r" })
+    add({ left = GOLD .. "Waylaid crates|r  " .. DIM .. "from guide sites of the beta; the Artisan reward seen in game|r" })
     for _, o in ipairs(NS.crateOptions()) do
       add({ left = "   " .. o.label, right = o.text(), crateOpt = o.key,
         action = function(button) o.set(o.get() + (button == "RightButton" and -1 or 1)) end,
@@ -350,10 +359,8 @@ function NS.buildSettings()
   end
 
   add({ left = "" })
-  add({ left = "Put every number back to its default", right = DIM .. "[reset]|r", action = function()
-    S.opts = {}
-    NS.bump()
-    NS.refresh()
+  add({ left = "Put every number back to its default", right = DIM .. "[reset]|r", resetAll = true, action = function()
+    NS.resetOpts()
   end })
   return out, "Settings"
 end
@@ -437,14 +444,15 @@ function NS.confirm(text, yesText, onYes)
       ask:Hide()
       if type(fn) == "function" then fn() end
     end)
-    ask.yes:SetPoint("BOTTOMRIGHT", -100, 8)
     ask.no = UI.button(ask, "Cancel", 84, function()
       ask.run = false
       ask:Hide()
     end)
     ask.no:SetPoint("BOTTOMRIGHT", -10, 8)
+    ask.yes:SetPoint("RIGHT", ask.no, "LEFT", -6, 0)   -- beside Cancel, however wide Cancel is
     if type(UISpecialFrames) == "table" then table.insert(UISpecialFrames, "KeboldsShinyConfirm") end
   end
+  if UI.closePopup then UI.closePopup("other") end   -- an open panel (Route settings) would lie over the question
   ask.run = onYes
   ask.question:SetText(text or "")
   ask.yes.label:SetText(yesText or "Yes")
@@ -615,13 +623,13 @@ local function buildPage(page)
   pf.new = UI.button(c0.content, "New profile", 96, function()
     NS.setProfile(NS.newProfile("Player"))
   end, { "New profile", "A plan for somebody else. It starts as a new character of your own faction with no Legacy ranks; name it and set the rest below." })
-  pf.new:SetPoint("TOPLEFT", 308, 0)
+  pf.new:SetPoint("LEFT", pf.who, "RIGHT", 8, 0)   -- each after the one before: a button is as wide as its text
   pf.delete = UI.button(c0.content, "Delete", 70, function()
     local _, name = NS.who()
     if not name then return end
     NS.confirm("Delete the profile " .. name .. " with its ranges and choices?", "Delete", function() NS.deleteProfile(name) end)
   end, { "Delete this profile", "Removes the profile shown with its ranges and choices. It asks first." })
-  pf.delete:SetPoint("TOPLEFT", 408, 0)
+  pf.delete:SetPoint("LEFT", pf.new, "RIGHT", 4, 0)
   pf.only = {}   -- shown only while a profile is the one planned for
   local function only(w)
     pf.only[#pf.only + 1] = w
@@ -717,9 +725,7 @@ local function buildPage(page)
   form.scale:SetPoint("TOPLEFT", CTL_X, y - 6)
   form.resetAll = c1:SetAction(UI.button(c1, "Reset all numbers", 130, function()
     NS.confirm("Put every number back to its default? (Your own Legacy rank overrides too.)", "Reset", function()
-      settings().opts = {}
-      NS.bump()
-      NS.refresh()
+      NS.resetOpts()
     end)
   end, { "Reset all numbers", "Puts every number of the calculations back to its default (the Legacy rank overrides too). It asks first." }))
 
@@ -739,7 +745,7 @@ local function buildPage(page)
   form.legacyNote:SetJustifyH("LEFT")
   form.legacyNote:SetWordWrap(false)
 
-  -- 3b. Waylaid crates (LedgerCrates.lua): the Performance Bonus rank and the Favor of an Artisan crate
+  -- 3b. Waylaid crates (LedgerCrates.lua): the Performance Bonus rank
   if NS.crateOptions then
     local opts = NS.crateOptions()
     local wopts = NS.writOptions and NS.writOptions() or {}   -- Craftsman's Writs: the same card, under the crates' lines
@@ -859,14 +865,13 @@ local function choiceLine(page, i)
   hi:SetColorTexture(1, 1, 1, 0.06)
   line.name = UI.text(line, "body", "")
   line.name:SetPoint("LEFT", 4, 0)
-  line.name:SetPoint("RIGHT", -176, 0)
   line.name:SetJustifyH("LEFT")
   line.name:SetWordWrap(false)
   line.value = UI.text(line, "body", "")
-  line.value:SetPoint("RIGHT", -84, 0)
   line.value:SetWidth(88)
   line.value:SetJustifyH("RIGHT")
-  line.button = UI.button(line, "Remove", 76, function()
+  -- made with its longer label, so it is wide enough for both ("Clear all" on a group's head, "Remove" on a choice)
+  line.button = UI.button(line, "Clear all", 76, function()
     local row = line.row
     if type(row) ~= "table" then return end
     if row.choiceHead then
@@ -880,6 +885,11 @@ local function choiceLine(page, i)
     return { "Remove", "Forgets this choice: the plans decide by themselves again." }
   end)
   line.button:SetPoint("RIGHT", -2, 0)
+  line.button.fitLock = true   -- the label changes per line, the width stays the longer label's
+  -- the value ends where the button begins, the name where the value begins: nothing is placed by a number that
+  -- assumes the button's width
+  line.value:SetPoint("RIGHT", line.button, "LEFT", -6, 0)
+  line.name:SetPoint("RIGHT", line.value, "LEFT", -4, 0)
   line:SetScript("OnClick", function(self)   -- the line itself: the menu with the other choices
     local row = self.row
     if type(row) ~= "table" or row.choiceHead then return end
@@ -968,9 +978,9 @@ local function paintAbout(page)
   form.bReport:ClearAllPoints()
   form.bReport:SetPoint("TOPLEFT", content, "TOPLEFT", 4, -y)
   form.bWindow:ClearAllPoints()
-  form.bWindow:SetPoint("TOPLEFT", content, "TOPLEFT", 198, -y)
+  form.bWindow:SetPoint("LEFT", form.bReport, "RIGHT", 6, 0)   -- each after the one before: a button is as wide as its text
   form.bEverything:ClearAllPoints()
-  form.bEverything:SetPoint("TOPLEFT", content, "TOPLEFT", 412, -y)
+  form.bEverything:SetPoint("LEFT", form.bWindow, "RIGHT", 6, 0)
   return y + 26
 end
 
