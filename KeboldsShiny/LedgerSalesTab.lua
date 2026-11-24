@@ -332,6 +332,8 @@ function NS.pricesLastRows()
     if ok and type(text) == "string" and text ~= "" then out[#out + 1] = { left = text, wide = true, sum = "run", card = "last" } end
   end
   local last = isTable(KeboldsShinyDB) and KeboldsShinyDB.lastScan or nil
+  -- the note is saved for the whole account: one made at another realm's or the other faction's auction house is not shown
+  if isTable(last) and isTable(KeboldsShinyHouse) and KeboldsShinyHouse.mine and not KeboldsShinyHouse.mine(last) then last = nil end
   if isTable(last) and not (run and run.running) then
     out[#out + 1] = { left = tostring(last.how or "Scan") .. ": " .. (last.done or 0) .. " of " .. (last.total or 0) .. " items, " .. (last.found or 0) .. " with listings, "
       .. (last.empty or 0) .. " empty, " .. ((last.timeouts or 0) > 0 and RED or "") .. (last.timeouts or 0) .. " timeouts" .. ((last.timeouts or 0) > 0 and "|r" or "")

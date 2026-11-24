@@ -41,10 +41,10 @@ local function optDefault(o)
   if o.game then return o.game() or 0 end
   return E.defaults[o.key] or 0
 end
--- A Legacy talent the collector has not found (never read, or the game is not in English: talents are found by
--- their English name) counts as rank 0, and the page says so instead of showing a 0 as if it were read.
+-- A Legacy talent the collector has not found (never read, or a client that gives neither the talent's known spell
+-- id nor its English name) counts as rank 0, and the page says so instead of showing a 0 as if it were read.
 local NOT_READ = "not read from the game: type your rank"
-local UNREAD_TIP = "Legacy talents are read by themselves every few minutes and are found by their English names. If the game is in another language, or they have not been read yet, type your rank in the Legacy talents card."
+local UNREAD_TIP = "Legacy talents are read by themselves every few minutes, in any language of the game. If yours have not been read yet, or this one could not be found, type your rank in the Legacy talents card."
 local function rankRead(name)
   local rank, found = NS.legacyRank(name)
   return rank, found == true
@@ -172,7 +172,8 @@ local function aboutData()
     local d = type(line) == "string" and tonumber(line:match("^(%d+);")) or nil
     if d and (not newest or d > newest) then newest = d end
   end
-  out[#out + 1] = { "Auction prices on " .. tostring(try(GetRealmName) or "this realm"),
+  local myFaction = try(UnitFactionGroup, "player")   -- prices are kept per realm and faction: each faction has its own auction house
+  out[#out + 1] = { "Auction prices on " .. tostring(try(GetRealmName) or "this realm") .. ((myFaction == "Alliance" or myFaction == "Horde") and (" (" .. myFaction .. ")") or ""),
     nItems == 0 and "none yet: scan at the auction house" or (nItems .. " items, the newest from " .. dayText(newest and (NS.DAY_ZERO + newest * 86400 + 43200) or nil)) }
   local d = NS.data()
   local nIt = 0

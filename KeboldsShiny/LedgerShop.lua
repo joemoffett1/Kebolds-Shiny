@@ -23,6 +23,8 @@
 --   shown the route is the plan of that moment (prices, recipes known, settings), from the character's skill when
 --   that is past the entry's start. So the list shrinks as you level and follows a new scan; a frozen copy would
 --   keep asking for the materials of steps already done. Once the skill reaches the entry's end it needs nothing.
+--   EXCEPT when the profession has a started plan (LedgerRoute.lua): a started plan never re-plans, so the entry
+--   is then what is left of that plan (NS.startedSteps), the same steps "Add route to shopping" would add.
 -- * A "step" entry is FROZEN: the recipe and the crafts of the step as planned when it was added (that is what
 --   "buy for this step" means; the route may move on, the step you chose to shop for does not).
 -- * "favs" is live too (n crafts of every favourite at the time); shopAdd({ kind = "favs", n = , split = true })
@@ -278,15 +280,16 @@ NS.shopWalk = walk   -- for tests
 -- The route a "route" entry stands for right now: segs, the range really planned, and the context it was planned
 -- in. The Route tab's own route is used when it is the same plan; otherwise it is planned here and kept until
 -- the plan's signature changes.
-local function routeOf(e)
+-- The route planned live for the entry's profession, from `from` (or the skill, when that is higher) to `to`.
+local function liveRoute(e, from, to)
   local st = NS.profState(e.prof)
-  local from, to = e.from, e.to
   if st.skill and st.skill > from then from = st.skill end
   if from >= to then return { done = true, from = from, to = to } end
   local c = NS.state(e.prof)
   local sig = NS.sigOf(e.prof, st, from, to)
   local cur = type(NS.current) == "function" and NS.current() or nil
-  if cur and cur.route and cur.prof == e.prof and cur.from == from and cur.to == to and cur.sig == sig and cur.ctx == c.ctx then
+  -- (a started plan on the Level page is not a live plan of this range, even when the numbers match)
+  if cur and cur.route and not cur.started and cur.prof == e.prof and cur.from == from and cur.to == to and cur.sig == sig and cur.ctx == c.ctx then
     return { route = cur.route, from = from, to = to, ctx = c.ctx }
   end
   local kept = routeCache[e.prof]
@@ -303,11 +306,34 @@ local function routeOf(e)
   return { route = kept.route, from = from, to = to, ctx = c.ctx, foreign = kept.foreign }
 end
 
-local function build()
+local function routeOf(e)
+  -- A started plan never re-plans (LedgerRoute.lua): the entry then stands for what is left of that plan, the same
+  -- steps and counts "Add route to shopping" puts on the list, whatever the prices and settings are now.
+  -- The plan only covers its own range. An entry that goes further than the plan's end has the part beyond it
+  -- planned live (`rest`); when the plan has nothing left that part is all there is (`planDone` = where the plan
+  -- ended). An entry that begins at or after the plan's end has nothing of the plan in it: planned live as before.
+  if type(NS.startedSteps) == "function" then
+    local ok, steps, route = pcall(NS.startedSteps, e.prof)
+    local planTo = ok and type(route) == "table" and tonumber(route.to) or nil
+    if ok and type(steps) == "table" and type(route) == "table" and type(route.started) == "table" and not (planTo and tonumber(e.from) and e.from >= planTo) then
+      local c = NS.state(e.prof)
+      local pr = NS.planProgress(route.started, c and c.st or nil)
+      local rest = (planTo and tonumber(e.to) and e.to > planTo) and liveRoute(e, planTo, e.to) or nil
+      if rest and (pr.finished or #steps == 0) then
+        rest.planDone = planTo
+        return rest
+      end
+      return { started = true, steps = steps, route = route, pr = pr, from = pr.skill, to = rest and rest.to or route.to, done = pr.finished or nil, ctx = c and c.ctx or nil,
+        rest = rest, planTo = planTo }
+    end
+  end
+  return liveRoute(e, e.from, e.to)
+end
+
+local function buildList(restore)   -- restore: contexts whose set of declined recipes has to be put back: { ctx, ban }
   local sh, db, S = store(), NS.data(), NS.settings()
   local need, order = {}, {}   -- [item] = record, and the items in the order they were first needed
   local wants = {}             -- one per entry: { index, entry, kind, label, n, problem, recipe, item, done }
-  local restore = {}           -- contexts whose set of declined recipes has to be put back: { ctx, ban }
 
   local function addNeed(item, qty, ctx, by)
     local rec = need[item]
@@ -366,16 +392,58 @@ local function build()
       -- in force before is put back at the end, so the Level page's parts read as they did
       local c0 = ctxOf(e.prof)
       local before = (c0 and type(c0.getBan) == "function") and c0.getBan() or nil
+      if before then restore[#restore + 1] = { ctx = c0, ban = before } end   -- noted before anything is planned: it is put back after an error too
       local x = routeOf(e)
       w.from, w.to = x.from, x.to
-      w.label = tostring(e.prof) .. " route " .. x.from .. " to " .. e.to
+      w.label = tostring(e.prof) .. " route " .. x.from .. " to " .. (x.started and x.to or e.to)
+      w.started = x.started
+      w.planDone = x.planDone   -- the started plan is finished at this skill: what is listed is planned live
       if x.done then
         w.done = true
       elseif x.problem then
         w.problem = x.problem
+      elseif x.started then
+        -- the started plan's remaining steps, counted as the step entries "Add route to shopping" makes of them;
+        -- parts read with the paid recipes that plan declined, and the set in force before is put back at the end
+        if before and x.ctx == c0 then
+          local ban = {}
+          for id in pairs(x.route.ban or {}) do ban[id] = true end
+          c0.setBan(ban)
+        end
+        local crafts, gaps = 0, 0
+        for _, s in ipairs(x.steps) do
+          if s.stock and s.r.made > 0 and x.ctx then
+            addStock(s.r.made, s.n * max(1e-9, x.ctx.makes(s.r)), x.ctx, { i })
+          else
+            addCrafts(s.r, s.n, x.ctx, { i })
+            crafts = crafts + s.n
+          end
+        end
+        for k, g in ipairs(x.route.segs) do
+          if not g.r and k >= (x.pr.step or 1) then gaps = gaps + (g.to - max(g.from, x.from)) end
+        end
+        -- the part of the entry's range beyond the plan's end, planned live (routeOf). The parts are read with the
+        -- started plan's set of declined recipes, set above: the plan's own steps must list what the plan lists.
+        local rest = x.rest
+        if rest and rest.route then
+          w.planTo, w.planCrafts, w.restFrom, w.restCrafts = x.planTo, crafts, rest.from, 0
+          for _, g in ipairs(rest.route.segs) do
+            if g.r and not g.stock then
+              addCrafts(g.r, g.crafts, rest.ctx, { i })
+              crafts = crafts + g.crafts
+              w.restCrafts = w.restCrafts + g.crafts
+            elseif not g.r then
+              gaps = gaps + (g.to - g.from)
+            end
+          end
+        elseif rest then
+          w.to = x.planTo   -- the rest could not be planned: the line is the plan's alone
+          w.label = tostring(e.prof) .. " route " .. x.from .. " to " .. x.planTo
+        end
+        w.crafts, w.gaps = crafts, gaps
+        if crafts == 0 then w.problem = "nothing left to craft in the plan you started" end
       else
         if x.foreign then x.ctx.setBan(x.route.ban or {}) end
-        if before and x.ctx == c0 then restore[#restore + 1] = { ctx = c0, ban = before } end
         local crafts, gaps = 0, 0
         for _, g in ipairs(x.route.segs) do
           if g.r and not g.stock then   -- a step of parts made ahead buys nothing itself: the steps that use the parts do
@@ -504,7 +572,16 @@ local function build()
     end
   end
   out.ahCost = out.cost - out.vendorCost
+  return out
+end
+
+-- The sets of declined recipes a route entry changed are put back whether the list was built or building it
+-- failed halfway; the error then goes on to the caller as before.
+local function build()
+  local restore = {}
+  local ok, out = pcall(buildList, restore)
   for k = #restore, 1, -1 do pcall(restore[k].ctx.setBan, restore[k].ban) end   -- the first one saved is the set to end with
+  if not ok then error(out, 0) end
   return out
 end
 
@@ -705,7 +782,13 @@ function NS.shopRows()
     local qty = e.kind ~= "route" and (e.n or 1) or nil
     local note = w.problem and (red .. "  " .. w.problem .. "|r") or (w.done and (green .. "  done: your skill is past it|r") or "")
     if e.kind == "route" and not w.problem and not w.done then
-      note = dim .. "  " .. (w.crafts or 0) .. " crafts as planned now" .. ((w.gaps or 0) > 0 and (", " .. w.gaps .. " points without a recipe") or "") .. "|r"
+      local what = w.started and " crafts left in the plan you started" or " crafts as planned now"
+      if w.started and w.restCrafts then   -- the entry goes further than the plan: say which part is which
+        what = " crafts: " .. w.planCrafts .. " left in the plan you started (to " .. w.planTo .. "), " .. w.restCrafts .. " planned now (" .. w.restFrom .. " to " .. w.to .. ")"
+      elseif w.planDone then
+        what = what .. " (the plan you started is finished at " .. w.planDone .. ")"
+      end
+      note = dim .. "  " .. (w.crafts or 0) .. what ..((w.gaps or 0) > 0 and (", " .. w.gaps .. " points without a recipe") or "") .. "|r"
     end
     local menu = {}
     if qty then
@@ -716,7 +799,10 @@ function NS.shopRows()
       end
     end
     menu[#menu + 1] = { text = "Remove from the shopping list", func = function() NS.shopRemove(i) end }
-    local tip = { e.kind == "route" and "The whole route as it is planned right now, from your skill on: it follows new prices and shrinks as you level."
+    local tip = { e.kind == "route" and ((w.started and w.restCrafts) and ("What is left of the plan you started, up to skill " .. w.planTo .. ": that part only changes when you Plan again. The rest of this entry's range is planned right now and follows new prices.")
+        or w.planDone and ("The plan you started is finished at skill " .. w.planDone .. ". The rest of this entry's range is planned right now, from your skill on: it follows new prices and shrinks as you level.")
+        or w.started and "What is left of the plan you started, from your skill on: it shrinks as you level and only changes when you Plan again."
+        or "The whole route as it is planned right now, from your skill on: it follows new prices and shrinks as you level.")
       or (e.kind == "step" and (e.stock and "Parts made ahead for later steps, as planned when you added it. Steps on the list that use these parts draw on them: the materials are counted once."
         or "A route step as it was planned when you added it.")
       or (e.kind == "favs" and "Every favourite recipe, this many crafts of each." or (e.kind == "item" and "This many of one item." or "This many crafts of one recipe."))),

@@ -47,15 +47,311 @@ local function today()
   return math.floor((time() - DAY_ZERO) / 86400)
 end
 
--- The saved table for this realm, created on first use. Never wiped: partial scans add to it.
+-- ---- one auction house: a realm and a faction ---------------------------------------------------------------
+-- Horde and Alliance have separate auction houses on a Forever realm (owner, 2026-11-22), so everything saved
+-- about an auction house (prices, price history, the wait after a whole-house scan, the tracking of your own
+-- auctions) is kept per realm AND faction. KeboldsShinyHouse is the one place that knows where:
+--   t[<realm>]                 the table of the faction its `faction` field names ("Alliance" / "Horde"): the first
+--                              faction that saved anything on the realm
+--   t[<realm>/<faction>]       the other faction's table
+-- t is KeboldsShinyDB.realms (scans) or KeboldsShinyDB.sales (Sales.lua). A table under the realm's name with no
+-- `faction` is from before the change. It is left where it is and given to the faction that scanned it. The saved
+-- prices do not say who scanned them, so "seen" (`claimed` = "<time>;seen") takes a sign that ties a character to
+-- this auction house: every auction still open in the realm's old sales tracking names the character that posted
+-- it (`open[..].who`), and a profession list the collector saved names its character AND that character's faction
+-- in one record (`collect.recipes[..].who` / `.player`). When every such character is known and they are all of
+-- one faction, the old tables are that faction's. Anything less (no open auction, a character with no saved
+-- profession list, both factions) and they go to the first character that loads them ("<time>;first"). Records
+-- that only say "a character of this faction was online" (trainers, vendors, the Legacy record, each rewritten
+-- by whoever came last) are NOT counted. Both tables are given away in the same moment, so prices and sales
+-- cannot go to different factions; one chat line says who got them, and /keboldscan faction move hands them to
+-- the other faction (`claimed` = "<time>;moved").
+-- While the game names no faction for the character (nil, "", "Neutral") nothing saved is read, written or given
+-- away: what would be saved is held in memory (`held`) and filed in the faction's table once the game names it,
+-- in this session. It is never filed for another character.
+KeboldsShinyHouse = {}
+local FACTIONS = { Alliance = true, Horde = true }
+local OTHER = { Alliance = "Horde", Horde = "Alliance" }
+
+local function houseOf()
+  local realm = (GetRealmName and GetRealmName()) or "Unknown"
+  local ok, faction = pcall(function() return (UnitFactionGroup("player")) end)
+  return realm, (ok and FACTIONS[faction]) and faction or nil
+end
+
+-- The faction of the characters whose auctions the old sales tracking of this realm still lists, or nil when that
+-- cannot be told for certain (see above).
+local function seenFaction(realm)
+  local db = type(KeboldsShinyDB) == "table" and KeboldsShinyDB or nil
+  local sales = db and type(db.sales) == "table" and db.sales[realm] or nil
+  local open = type(sales) == "table" and sales.open or nil
+  local recs = db and type(db.collect) == "table" and db.collect.recipes or nil
+  if type(open) ~= "table" or type(recs) ~= "table" then return nil end
+  local side = {}   -- "<name>-<realm>" -> faction; false when two lists disagree
+  for _, rec in pairs(recs) do
+    if type(rec) == "table" and type(rec.who) == "string" and type(rec.player) == "string" then
+      local faction, where = rec.player:match("^(%a+);[^;]*;(.*)$")   -- the collector's "faction;level;realm"
+      if FACTIONS[faction] and where == realm then
+        if side[rec.who] == nil then side[rec.who] = faction elseif side[rec.who] ~= faction then side[rec.who] = false end
+      end
+    end
+  end
+  local owner
+  for _, a in pairs(open) do
+    local faction = type(a) == "table" and type(a.who) == "string" and side[a.who .. "-" .. realm] or nil
+    if not faction or (owner and owner ~= faction) then return nil end   -- somebody unknown, or both factions
+    owner = faction
+  end
+  return owner
+end
+
+-- Gives this realm's tables from before the change to a faction (see above). mine = the character's faction.
+local function claimOld(realm, mine)
+  local db = type(KeboldsShinyDB) == "table" and KeboldsShinyDB or nil
+  local owner, why
+  for _, name in ipairs({ "realms", "sales" }) do
+    local base = db and type(db[name]) == "table" and db[name][realm] or nil
+    if type(base) == "table" and not FACTIONS[base.faction] then
+      if not owner then
+        owner = seenFaction(realm)
+        why = owner and "seen" or "first"
+        owner = owner or mine
+      end
+      base.faction = owner
+      base.claimed = string.format("%.0f", (time and time()) or 0) .. ";" .. why
+    end
+  end
+  if owner then
+    say("Auction prices saved on " .. tostring(realm) .. " before this update now belong to the " .. owner .. " auction house ("
+      .. (why == "seen" and ("the auctions tracked there were a " .. owner .. " character's") or "the faction of the first character to load them; the addon could not tell who scanned them")
+      .. "). If that is wrong, /keboldscan faction move hands them to the " .. OTHER[owner] .. " auction house.")
+  end
+end
+
+-- What was saved while the game named no faction, kept in memory only: held[t][realm] = a table shaped like
+-- t[<house>]. heldNote is the note of a scan (KeboldsShinyDB.lastScan) stamped in that time.
+local held = setmetatable({}, { __mode = "k" })
+local heldNote = nil
+local LISTS = { events = true, done = true, hints = true, log = true }
+local SUMS = { posted = true, postedQty = true, sold = true, soldQty = true, expired = true, expiredQty = true, cancelled = true, cancelledQty = true }
+
+-- Moves everything in src (held) into dest (the faction's own table). src and its inner tables stay, emptied: a
+-- scan that started while the faction was unknown may still write to them, and that is moved at the next look.
+local function pour(dest, src)
+  for k, v in pairs(src) do
+    if type(v) ~= "table" then
+      dest[k], src[k] = v, nil
+    else
+      local d = dest[k]
+      if type(d) ~= "table" then
+        d = {}
+        dest[k] = d
+      end
+      if LISTS[k] then
+        for _, x in ipairs(v) do d[#d + 1] = x end
+      elseif k == "hist" then   -- one reading per item and day: added to the days already there (Sales.lua)
+        local record = type(KeboldsShinyHistory) == "table" and KeboldsShinyHistory.record or nil
+        for id, text in pairs(v) do
+          if record and d[id] ~= nil then
+            for day, low, qty in tostring(text):gmatch("(%d+):(%d+):(%d+)") do
+              pcall(record, dest, id, tonumber(day), tonumber(low), tonumber(qty))
+            end
+          else
+            d[id] = text
+          end
+        end
+      else
+        for id, x in pairs(v) do
+          local old = d[id]
+          if k == "items" and type(x) == "table" and type(old) == "table" then   -- sales counts of one item: add up
+            for f, n in pairs(x) do
+              if SUMS[f] and type(n) == "number" and type(old[f]) == "number" then old[f] = old[f] + n else old[f] = n end
+            end
+          else
+            d[id] = x
+          end
+        end
+      end
+      for id in pairs(v) do v[id] = nil end
+    end
+  end
+end
+
+-- The game now names the faction: what was held for this realm goes into the faction's table t[key].
+local function fileHeld(t, realm, key, mine)
+  local h = held[t] and held[t][realm] or nil
+  if h then
+    if type(t[key]) ~= "table" then
+      h.faction = mine
+      t[key] = h              -- the same table, so a scan still running goes on writing to the right place
+      held[t][realm] = nil
+    else
+      pour(t[key], h)
+    end
+  end
+  if heldNote then
+    if heldNote.realm == realm then heldNote.faction = mine end
+    heldNote = nil
+  end
+end
+
+-- The key of this character's auction house in t, its faction and the realm. The key and the faction are nil
+-- when the game names no faction (or t is no table): then no saved table is this character's.
+local function houseKey(t)
+  local realm, mine = houseOf()
+  if not mine or type(t) ~= "table" then return nil, nil, realm end
+  claimOld(realm, mine)
+  local key = realm
+  local base = t[realm]
+  if type(base) == "table" and FACTIONS[base.faction] and base.faction ~= mine then key = realm .. "/" .. mine end
+  fileHeld(t, realm, key, mine)
+  return key, mine, realm
+end
+
+-- Settles whose the realm's tables from before the change are, if that is still open. The collector calls it
+-- before it saves anything about this character, so the character's own records never count as a sign of who
+-- scanned the old prices.
+function KeboldsShinyHouse.claim()
+  local realm, mine = houseOf()
+  if mine then claimOld(realm, mine) end
+end
+
+-- This character's auction-house table in t, or nil when nothing was saved for it. Creates nothing. Without a
+-- faction: only what this character saved in this session (held), never a faction's table.
+function KeboldsShinyHouse.peek(t)
+  if type(t) ~= "table" then return nil end
+  local key, _, realm = houseKey(t)
+  local store
+  if key then store = t[key] else store = held[t] and held[t][realm] or nil end
+  return type(store) == "table" and store or nil
+end
+
+-- The same, made when it is not there yet. Without a faction it is a table held in memory (see above).
+function KeboldsShinyHouse.open(t)
+  if type(t) ~= "table" then return nil end
+  local key, mine, realm = houseKey(t)
+  if not key then
+    if not held[t] then held[t] = {} end
+    if type(held[t][realm]) ~= "table" then held[t][realm] = {} end
+    return held[t][realm]
+  end
+  if type(t[key]) ~= "table" then t[key] = { faction = mine } end
+  return t[key]
+end
+
+-- Whether a saved note about a scan (KeboldsShinyDB.lastScan) is about this character's auction house. A note from
+-- before the change names no house and counts. A note that names a faction is nobody's while the game names none.
+function KeboldsShinyHouse.mine(rec)
+  if type(rec) ~= "table" then return false end
+  local realm, mine = houseOf()
+  if rec.realm ~= nil and rec.realm ~= realm then return false end
+  if rec == heldNote then return true end   -- this character's own scan of this session, faction not yet named
+  if rec.faction ~= nil and rec.faction ~= mine then return false end
+  return true
+end
+
+-- Writes whose auction house a note about a scan is about. "?" = the game named no faction then; the faction is
+-- filled in when the game names it in this session, and until then the note is no other character's.
+local function stampHouse(rec)
+  local realm, mine = houseOf()
+  rec.realm, rec.faction = realm, mine or "?"
+  heldNote = (not mine) and rec or nil
+  return rec
+end
+KeboldsShinyHouse.stamp = stampHouse
+
+-- /keboldscan faction [move | swap]: who has which saved prices on this realm, and handing them to the other
+-- faction when the addon gave the prices from before the update to the wrong one. It only re-labels the saved
+-- tables (prices, and the sales tracking when it is the same faction's): nothing is deleted and nothing is sent
+-- to the game. busy = a scan is running (it writes into the table it started with).
+local function factionCommand(arg, busy)
+  local realm = houseOf()
+  local db = type(KeboldsShinyDB) == "table" and KeboldsShinyDB or {}
+  local function n(store, field)
+    local c = 0
+    for _ in pairs(type(store) == "table" and type(store[field]) == "table" and store[field] or {}) do c = c + 1 end
+    return c
+  end
+  local function prices(c) return c .. (c == 1 and " item price" or " item prices") end
+  -- the realm's table of db[name], whose it is, the other faction and the other faction's table
+  local function pair(name)
+    local t = type(db[name]) == "table" and db[name] or nil
+    local base = t and t[realm] or nil
+    if type(base) ~= "table" or not FACTIONS[base.faction] then return nil end
+    local other = OTHER[base.faction]
+    local second = t[realm .. "/" .. other]
+    return t, base, other, type(second) == "table" and second or nil
+  end
+  local t, base, other, second = pair("realms")
+  local st, sbase, _, ssecond = pair("sales")
+  local from = (base or sbase or {}).faction
+  if not from then
+    say("No saved auction prices on " .. tostring(realm) .. " belong to a faction yet, so there is nothing to hand over.")
+    return
+  end
+  if sbase and sbase.faction ~= from then st, sbase, ssecond = nil, nil, nil end   -- the sales tracking is the other way round already: left alone
+  local how = base and tostring(base.claimed or ""):match(";(%a+)$") or nil
+  local mineN, otherN = n(base, "items"), n(second, "items")
+  if arg == "" then
+    say("On " .. tostring(realm) .. ": the " .. from .. " auction house has " .. prices(mineN)
+      .. ((how == "seen" and " (saved before the update; given to it because the auctions tracked there were a " .. from .. " character's)")
+        or (how == "first" and " (saved before the update; given to it because a " .. from .. " character loaded them first)")
+        or (how == "moved" and " (handed to it with /keboldscan faction move)") or "")
+      .. ", the " .. other .. " auction house has " .. prices(otherN) .. ".")
+    say("/keboldscan faction move hands the " .. from .. " prices and sales tracking to the " .. other .. " auction house. Nothing is deleted, and the same command hands them back.")
+    return
+  end
+  if arg ~= "move" and arg ~= "swap" then
+    say("Usage: /keboldscan faction (who has which prices on this realm) | faction move (hand them to the other faction) | faction swap (exchange the two factions' prices).")
+    return
+  end
+  if busy then
+    say("A scan is running. Stop it first (/keboldscan stop), then type the command again. Nothing was changed.")
+    return
+  end
+  local otherHas = otherN > 0 or n(ssecond, "items") > 0 or n(ssecond, "open") > 0
+  if otherHas and arg ~= "swap" then
+    say("The " .. other .. " auction house on " .. tostring(realm) .. " already has " .. prices(otherN) .. " of its own. Nothing was changed.")
+    say("/keboldscan faction swap exchanges the two: " .. other .. " would get the " .. prices(mineN) .. " " .. from .. " has now, and " .. from .. " would get " .. other .. "'s.")
+    return
+  end
+  for _, x in ipairs({ { t, second }, { st, ssecond } }) do   -- nothing may be in the way of a table that moves
+    if x[1] and x[2] and x[1][realm .. "/" .. from] ~= nil then
+      say("The saved data for " .. tostring(realm) .. " is not in the shape this command expects. Nothing was changed.")
+      return
+    end
+  end
+  local stamp = string.format("%.0f", (time and time()) or 0) .. ";moved"
+  for _, x in ipairs({ { t, base, second }, { st, sbase, ssecond } }) do
+    local tab, b, s2 = x[1], x[2], x[3]
+    if tab and b then
+      b.faction, b.claimed = other, stamp
+      if s2 then
+        tab[realm .. "/" .. other] = nil
+        s2.faction = from
+        tab[realm .. "/" .. from] = s2
+      end
+    end
+  end
+  say("Done. On " .. tostring(realm) .. " the " .. prices(mineN) .. " the " .. from .. " auction house had now belong to the " .. other .. " auction house"
+    .. (otherHas and (", and the " .. prices(otherN) .. " " .. other .. " had now belong to " .. from) or "")
+    .. ((sbase or ssecond) and ". The sales tracking went with them." or ".")
+    .. " Nothing was deleted; /keboldscan faction " .. (otherHas and "swap exchanges" or "move hands") .. " them back.")
+  local ns = KeboldsShinyNS   -- Kebold reads the prices again
+  if type(ns) == "table" then
+    if type(ns.bump) == "function" then pcall(ns.bump) end
+    if type(ns.refreshSoon) == "function" then pcall(ns.refreshSoon, 0.2) end
+  end
+end
+
+-- The saved table for this character's auction house (realm and faction), created on first use. Never wiped:
+-- partial scans add to it.
 local function realmStore()
   if type(KeboldsShinyDB) ~= "table" then KeboldsShinyDB = {} end
   local db = KeboldsShinyDB
   db.v = 1
   if type(db.realms) ~= "table" then db.realms = {} end
-  local name = GetRealmName() or "Unknown"
-  if type(db.realms[name]) ~= "table" then db.realms[name] = {} end
-  local store = db.realms[name]
+  local store = KeboldsShinyHouse.open(db.realms)
   if type(store.items) ~= "table" then store.items = {} end
   return store
 end
@@ -171,8 +467,8 @@ local function finish(reason)
   end
   -- what the last scan did, for Kebold's Scan tab
   if type(KeboldsShinyDB) == "table" then
-    KeboldsShinyDB.lastScan = { done = s.done, total = #s.ids, found = s.found, empty = s.empty, timeouts = s.timeouts,
-      time = time(), label = s.label, how = reason, sells = s.sells }
+    KeboldsShinyDB.lastScan = stampHouse({ done = s.done, total = #s.ids, found = s.found, empty = s.empty, timeouts = s.timeouts,
+      time = time(), label = s.label, how = reason, sells = s.sells })
   end
   if (s.sells or 0) > 0 then
     say(s.sells .. " vendor values were new or different from the last reading. Kebold's Scan tab lists the ones that differ from its built-in data.")
@@ -948,8 +1244,8 @@ local function qfinish(reason)
     q.store.time = time()
   end
   if type(KeboldsShinyDB) == "table" then
-    KeboldsShinyDB.lastScan = { done = q.done, total = #q.ids, found = q.found, empty = q.empty, timeouts = q.left, time = time(),
-      label = q.label, how = reason, sells = q.sells, note = text, quick = true }
+    KeboldsShinyDB.lastScan = stampHouse({ done = q.done, total = #q.ids, found = q.found, empty = q.empty, timeouts = q.left, time = time(),
+      label = q.label, how = reason, sells = q.sells, note = text, quick = true })
   end
   qlog("finish: " .. reason .. (text and (" | " .. text) or ""))
   if q.sells > 0 then
@@ -1489,6 +1785,8 @@ SlashCmdList["KEBOLDSSHINYSCAN"] = function(msg)
     end
   elseif cmd == "status" then
     status()
+  elseif cmd == "faction" or cmd:find("^faction%s") then
+    factionCommand(cmd:match("^faction%s*(.-)$"), scan ~= nil or quick ~= nil or debugRun ~= nil)
   elseif cmd == "debug" or cmd:find("^debug%s") then
     startDebug(tonumber(cmd:match("^debug%s+(%d+)$")) or DEBUG_ITEM)
   elseif cmd:find("^[%d,%s]+$") then
@@ -1499,6 +1797,7 @@ SlashCmdList["KEBOLDSSHINYSCAN"] = function(msg)
     -- a profession ("bs", "lw", ...), "route" or "everything": Kebold picked the items and started the scan
   else
     say("Usage: /keboldscan [mats | parts | all | stop | status | <item ids separated by commas or spaces>]")
+    say("/keboldscan faction = which faction has which saved prices on this realm; /keboldscan faction move hands them to the other faction (saved data only).")
     say("One profession only: /keboldscan bs (or lw, tailoring, eng, alch, ench, cook, firstaid, mining), add 'all' for every item of it. /keboldscan route = just the items of your leveling route.")
     say("/keboldscan fav = the recipes you marked as favourites in Kebold (what they make and everything needed to make them).")
     say("/keboldscan everything = every item of all nine professions: materials, parts, products with gear, recipe items (several thousand, about 40 minutes).")

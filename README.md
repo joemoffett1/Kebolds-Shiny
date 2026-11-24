@@ -33,9 +33,14 @@ What to expect on your own character:
 - Everything it knows about you it reads itself, while you play: open each of your profession windows once (your
   known recipes and skill), visit the vendors and trainers you use, and scan at the auction house. Until then it
   plans from the data it shipped with.
-- Prices are kept per realm. Vendor prices are only used when a character of your own faction read them.
-- The game does not need to be in English for your professions to be recognised. Legacy talents, however, are
-  found by their English names: if Settings says a rank was "not read from the game", type your rank there.
+- Prices are kept per realm and faction, because Horde and Alliance each have their own auction house: a character
+  of the other faction scans for itself. Vendor prices are only used when a character of your own faction read them.
+  Prices saved by an older version did not say which faction scanned them: the addon gives them to one faction and
+  says which in chat. If it picked the wrong one, `/keboldscan faction move` hands them to the other faction
+  (`/keboldscan faction` shows who has what; nothing is deleted, and the same command moves them back).
+- The game does not need to be in English: your professions, your Legacy talents and the map pins are found by
+  the game's own numbers, not by names. What the addon itself writes (zone, trainer and recipe names included)
+  is in English. If Settings says a rank was "not read from the game", type your rank there.
 - Much of the shipped data (who sells or teaches what, and where) is the original game's and can be wrong for
   Forever; what the addon reads in game replaces it.
 
@@ -119,6 +124,7 @@ what making the item costs and earns, and what a recipe item teaches.
 | `/keboldscan gear` | Gear (quick): one browse of armour and weapons, uncommon and better. Cheapest price and number listed per item, no price steps |
 | `/keboldscan mats`, `parts`, `all`, `<item ids>` | the older fixed lists, or just those items |
 | `/keboldscan status`, `stop` | progress; end the scan |
+| `/keboldscan faction`, `faction move`, `faction swap` | which faction has which saved prices on this realm; hand them (and the sales tracking) to the other faction; exchange the two when both have prices. Saved data only: nothing is deleted or sent to the game |
 | `/keboldshop` | the shopping list in chat; `add recipe <spell id> [n]`, `add item <item id> [n]`, `add route [profession]`, `add favs [n]`, `qty <line> <n>`, `remove <line>`, `clear`, `tick <item id>`, `untick <item id>` |
 | `/keboldde` | your logged disenchants: how many, per band whether the rates are measured yet, the cast time; `log` the last lines, `debug` what the watcher saw |
 | `/keboldsales` | your auctions in chat; `<part of a name>`, `log [lines]`, `auto on`, `auto off` |
@@ -151,7 +157,7 @@ World of Warcraft\_forever_\WTF\Account\<ACCOUNT>\SavedVariables\KeboldsShiny.lu
 The game writes it at `/reload` or on logging out. Kebold itself reads everything from memory, so no reload is
 needed after a scan.
 
-Prices are kept per realm, one line an item: `[itemID] = "<day>;<total quantity>;<unit price in copper>:<quantity>,..."`
+Prices are kept per realm and faction (the second faction on a realm is saved as `<realm>/<faction>`), one line an item: `[itemID] = "<day>;<total quantity>;<unit price in copper>:<quantity>,..."`
 (up to 40 price steps, cheapest first; `<day>` is days since 2020-01-01 UTC; nothing listed is `"<day>;0;"`).
 Nothing about sellers is stored. An item's line is replaced when a scan reaches it, so a scan stopped part-way
 keeps the older prices of what it did not reach. Each scan also appends one reading an item a day (30 days) to
@@ -175,3 +181,7 @@ still time out:
 2. Leave the auction house open for 60 seconds. When the chat line starting with `NOW` appears, search for the same
    item by hand and click it in the results.
 3. At `debug finished`, type `/reload`. The log is the `debug` list of `KeboldsShinyDB` in the saved file.
+
+## Licence
+
+GNU General Public License, version 3 or later (`LICENSE`).

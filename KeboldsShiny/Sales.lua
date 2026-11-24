@@ -27,10 +27,12 @@
 -- All of them are safe to call at any time and for any id.
 --
 -- ---- saved ----------------------------------------------------------------------------------------------------------
--- KeboldsShinyDB.sales[<realm>] = { items = { [itemID] = counts }, open = { [auctionID] = auction },
+-- <house> below is the character's auction house, a realm and a faction: the key KeboldsShinyHouse gives it
+-- (KeboldsShiny.lua: the realm's name, or "<realm>/<faction>" for the second faction on a realm).
+-- KeboldsShinyDB.sales[<house>] = { items = { [itemID] = counts }, open = { [auctionID] = auction },
 --     events = { "day|kind|item|qty|unit|src", ... }, soldSeen, done, hints, names, mail }
 -- KeboldsShinyDB.salesLog = { "<time> text", ... }      KeboldsShinyDB.salesAuto = false to stop the query
--- KeboldsShinyDB.realms[<realm>].hist[itemID] = "day:low:qty,day:low:qty,..."
+-- KeboldsShinyDB.realms[<house>].hist[itemID] = "day:low:qty,day:low:qty,..."
 -- (None of these strings look like a ladder, "day;total;tiers", which is what the web page reads from this file.)
 --
 -- ---- signals (two where possible) -----------------------------------------------------------------------------------
@@ -118,22 +120,36 @@ end
 
 -- ---- storage ----------------------------------------------------------------------------------------------------------
 
+-- This character's auction house in a saved table (KeboldsShinyDB.sales or .realms): its realm and faction, kept
+-- apart by KeboldsShinyHouse (KeboldsShiny.lua). Your own auctions sit in one faction's house, so what sold there
+-- says nothing about the other. Without that file the realm's name alone is the key, as it was.
+local function housePeek(t)
+  if type(t) ~= "table" then return nil end
+  if type(KeboldsShinyHouse) == "table" and KeboldsShinyHouse.peek then return try(KeboldsShinyHouse.peek, t) end
+  return type(t[realmName()]) == "table" and t[realmName()] or nil
+end
+local function houseOpen(t)
+  local s = type(KeboldsShinyHouse) == "table" and KeboldsShinyHouse.open and try(KeboldsShinyHouse.open, t) or nil
+  if type(s) == "table" then return s end
+  local name = realmName()
+  if type(t[name]) ~= "table" then t[name] = {} end
+  return t[name]
+end
+
 local function salesStore()
   local d = db()
   if type(d.sales) ~= "table" then d.sales = {} end
-  local name = realmName()
-  if type(d.sales[name]) ~= "table" then d.sales[name] = {} end
-  local s = d.sales[name]
+  local s = houseOpen(d.sales)
   for _, key in ipairs({ "items", "open", "events", "soldSeen", "done", "hints", "names", "mail" }) do
     if type(s[key]) ~= "table" then s[key] = {} end
   end
   return s
 end
 
--- read-only look: nil when nothing was ever saved for this realm (so a lookup never creates tables)
+-- read-only look: nil when nothing was ever saved for this auction house (so a lookup never creates tables)
 local function peekStore()
   local d = type(KeboldsShinyDB) == "table" and KeboldsShinyDB or nil
-  local s = d and type(d.sales) == "table" and d.sales[realmName()] or nil
+  local s = d and housePeek(d.sales) or nil
   return type(s) == "table" and type(s.items) == "table" and s or nil
 end
 
@@ -729,7 +745,7 @@ KeboldsShinyHistory = {}
 
 local function scanStore()
   local d = type(KeboldsShinyDB) == "table" and KeboldsShinyDB or nil
-  local store = d and type(d.realms) == "table" and d.realms[realmName()] or nil
+  local store = d and housePeek(d.realms) or nil
   return type(store) == "table" and store or nil
 end
 

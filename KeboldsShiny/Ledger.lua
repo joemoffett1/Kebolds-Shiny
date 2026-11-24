@@ -277,9 +277,15 @@ local function planOf(prof)
   return S.plan[prof]
 end
 
+-- The saved prices of this character's auction house: its realm and faction (KeboldsShinyHouse, KeboldsShiny.lua).
 local function realmItems()
   local realms = saved().realms
-  local store = type(realms) == "table" and realms[try(GetRealmName) or "Unknown"] or nil
+  local store
+  if type(KeboldsShinyHouse) == "table" and KeboldsShinyHouse.peek then
+    store = try(KeboldsShinyHouse.peek, realms)
+  else
+    store = type(realms) == "table" and realms[try(GetRealmName) or "Unknown"] or nil
+  end
   return type(store) == "table" and type(store.items) == "table" and store.items or {}
 end
 
@@ -463,29 +469,46 @@ local function vendorPrices()
   return out, all
 end
 
--- A Legacy talent's rank as the collector read it, and whether the talent was found at all. Talents are found by
--- their English name (their ids are not known to the addon): on a client in another language, or before the
--- talents were read, the rank is 0 and the second value false; the Settings page then asks for the rank.
-local function legacyRank(name)
+-- The spell id of each Legacy talent the addon counts, from the Forever client's own spell table (build
+-- 1.60.1.70938). The id is the same in every language; the talent's name is not.
+local LEGACY_SPELL = { ["Working Overtime"] = 1225451, ["Performance Bonus"] = 1225456, ["Master Chef"] = 1225457 }
+
+-- The collector's saved line of a Legacy talent ("tree|node id|name|rank|max rank|spell id|description") as its
+-- fields, or nil. A line carrying the talent's spell id is the talent whatever its name reads; a line carrying
+-- another known talent's id is never taken for it; the English name finds it only when no id settles it (a
+-- client whose talent ids differ from the table above).
+local function legacyLine(name)
   local leg = collected().legacy
+  local want, byName = LEGACY_SPELL[name], nil
   for _, line in ipairs(type(leg) == "table" and type(leg.list) == "table" and leg.list or {}) do
     local f = fieldsOf(line, "|")
-    if f[3] == name then return tonumber(f[4]) or 0, true end
+    local spell = tonumber(f[6])
+    if want and spell == want then return f end
+    if not byName and f[3] == name then
+      local other = false
+      for _, id in pairs(LEGACY_SPELL) do if spell == id then other = true end end
+      if not other then byName = f end
+    end
   end
+  return byName
+end
+
+-- A Legacy talent's rank as the collector read it, and whether the talent was found at all. Before the talents
+-- were read (or on a client that gives neither the known spell id nor the English name) the rank is 0 and the
+-- second value false; the Settings page then asks for the rank.
+local function legacyRank(name)
+  local f = legacyLine(name)
+  if f then return tonumber(f[4]) or 0, true end
   return 0, false
 end
 
 -- What a Legacy talent gives, read from its own text as the collector saved it ("... by 10%."): 0.10, or nil when
 -- the talent has no rank or its text has no percentage. The game's wording beats any per-rank guess.
 local function legacyBonus(name)
-  local leg = collected().legacy
-  for _, line in ipairs(type(leg) == "table" and type(leg.list) == "table" and leg.list or {}) do
-    local f = fieldsOf(line, "|")
-    if f[3] == name then
-      local pct = tonumber((f[7] or ""):match("(%d+)%%"))
-      if (tonumber(f[4]) or 0) > 0 and pct then return pct / 100 end
-      return nil
-    end
+  local f = legacyLine(name)
+  if f then
+    local pct = tonumber((f[7] or ""):match("(%d+)%s*%%"))   -- some languages write "10 %"
+    if (tonumber(f[4]) or 0) > 0 and pct then return pct / 100 end
   end
   return nil
 end

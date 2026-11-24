@@ -24,6 +24,7 @@ end
 local function places()
   return type(KeboldsShinyPlaces) == "table" and KeboldsShinyPlaces or nil
 end
+local mapFor   -- (zone, map) -> the game's map id; defined with the map pin below
 
 -- "A", "H" or nil when the game does not say
 local function mySide()
@@ -109,9 +110,34 @@ local function trainersOf(r)
       if open(n.side) then out[#out + 1] = n else other = other + 1 end
     end
   end
+  -- "here" is the map you are on, by its id (the same in every language); only a client that cannot say which
+  -- map that is falls back on comparing the zone's name, which works in English alone
+  local hereMap = C_Map and try(C_Map.GetBestMapForUnit, "player") or nil
   local here = try(GetRealZoneText) or ""
+  -- Inside a cave or a building with a map of its own the game names that smaller map. The zone it lies in is
+  -- found by walking up the map's parents until one of them is a map a listed trainer stands on (a few steps at
+  -- most; a map list that cannot be read or leads nowhere leaves "here" as it was).
+  if hereMap and C_Map and C_Map.GetMapInfo then
+    local has = {}
+    for _, n in ipairs(out) do
+      local id = mapFor(n.zone, n.map)
+      if id then has[id] = true end
+    end
+    local id, hops = hereMap, 0
+    while id and not has[id] and hops < 8 do
+      local info = try(C_Map.GetMapInfo, id)
+      id = type(info) == "table" and tonumber(info.parentMapID) or nil
+      if id == 0 then id = nil end
+      hops = hops + 1
+    end
+    if id and has[id] then hereMap = id end
+  end
+  local function isHere(n)
+    if hereMap then return mapFor(n.zone, n.map) == hereMap end
+    return n.zone == here
+  end
   table.sort(out, function(a, b)
-    local ah, bh = a.zone == here, b.zone == here
+    local ah, bh = isHere(a), isHere(b)
     if ah ~= bh then return ah end
     if (a.zone == "") ~= (b.zone == "") then return b.zone == "" end   -- trainers with no known place go last
     if a.zone ~= b.zone then return a.zone < b.zone end
@@ -291,10 +317,14 @@ function NS.whereLines(r)
   return out
 end
 
--- zone name -> map id, looked up once from the game's own map list
+-- The game's map id of a place. The id is the same in every language; the shipped zone names are English, so a
+-- name is only compared with the game's own map list (which is in the game's language) as a last resort.
 local mapByName
-local function mapFor(zone, map)
+function mapFor(zone, map)
   if map then return map end   -- a trainer read in game brings his own map id
+  local P = places()
+  local shipped = P and type(P.maps) == "table" and P.maps[zone]
+  if shipped then return shipped end   -- Places.lua carries the map id of every zone it names a position in
   if not mapByName then
     mapByName = {}
     if C_Map and C_Map.GetMapChildrenInfo then

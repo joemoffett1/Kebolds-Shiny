@@ -144,7 +144,7 @@ function NS.crateOptions()
   OPTIONS = {
     { key = "perf", label = "Performance Bonus rank (Legacy)", min = 0, max = C.perfMax, w = 30,
       hint = "0 to 3: a 5% chance a rank of double Favor",
-      tip = "The Legacy talent Performance Bonus: the expected Favor of a crate is its Favor x (1 + 0.05 x rank). Your own rank is used when it was read from the game; when it was not (the talent is found by its English name), it counts as 0: type your rank. A value typed here overrides it.",
+      tip = "The Legacy talent Performance Bonus: the expected Favor of a crate is its Favor x (1 + 0.05 x rank). Your own rank is used when it was read from the game; when it was not, it counts as 0: type your rank. A value typed here overrides it.",
       get = function() return (NS.cratePerf()) end,
       changed = function() return store().perf ~= nil end,
       text = function()

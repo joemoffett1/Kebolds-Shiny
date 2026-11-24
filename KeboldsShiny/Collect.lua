@@ -42,6 +42,10 @@ end
 
 function store()
   if type(KeboldsShinyDB) ~= "table" then KeboldsShinyDB = {} end
+  -- Prices saved before auction houses were kept per faction are given to the faction of the characters the
+  -- collector had seen on this realm (KeboldsShinyHouse, KeboldsShiny.lua). That has to be settled before this
+  -- character adds its own records, or a new character of the other faction would look like the one that scanned.
+  if type(KeboldsShinyHouse) == "table" and KeboldsShinyHouse.claim then pcall(KeboldsShinyHouse.claim) end
   local c = KeboldsShinyDB.collect
   if type(c) ~= "table" then
     c = {}

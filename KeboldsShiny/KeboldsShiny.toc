@@ -2,6 +2,7 @@
 ## Title: Kebold's Shiny
 ## Notes: Leveling route from live prices (/kebold), auction house price ladders (/keboldscan, also per profession), and a collector of what the game shows about professions.
 ## Version: 0.4
+## X-License: GPL-3.0-or-later
 ## IconTexture: Interface\Icons\INV_Misc_Book_09
 ## AddonCompartmentFunc: KeboldsShiny_OnCompartmentClick
 ## SavedVariables: KeboldsShinyDB

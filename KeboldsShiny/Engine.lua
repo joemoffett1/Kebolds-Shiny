@@ -926,7 +926,7 @@ function E.new(db, env)
   -- casts are counted in the steps that use it, so those points cost nothing extra. A step that uses such a part
   -- takes it from what was made ahead (taken) and gets no points for those units; whatever was not made ahead is
   -- made at that step and gives its points there.
-  function ctx.plan(prof, from, to, stock)
+  local function planOnce(prof, from, to, stock)
     local skip, stockList = nil, nil
     if stock and #stock > 0 then
       skip, stockList = {}, {}
@@ -1173,13 +1173,13 @@ function E.new(db, env)
   end
   ctx.routeNoWorse = routeNoWorse
 
-  function ctx.planAhead(prof, from, to)
-    local base = ctx.plan(prof, from, to)
+  local function aheadOnce(prof, from, to)
+    local base = planOnce(prof, from, to)
     local best = base
     local stock = partsToMakeEarly(base)
     for _ = 1, 4 do
       if #stock == 0 then break end
-      local route = ctx.plan(prof, from, to, stock)
+      local route = planOnce(prof, from, to, stock)
       local list, need = partsToMakeEarly(route)
       local ok, same = true, #list == #route.stock
       for _, e in ipairs(route.stock) do
@@ -1214,8 +1214,8 @@ function E.new(db, env)
   --   route.ban      [recipe id] = true: paid recipes left out (the context is left set to it, so shopping lists
   --                  and part choices match the route)
   --   route.without  the totals of the route that learns nothing paid
-  function ctx.planBest(prof, from, to)
-    if not env.learnCost then return ctx.planAhead(prof, from, to) end
+  local function bestOnce(prof, from, to)
+    if not env.learnCost then return aheadOnce(prof, from, to) end
     local all, any = {}, false
     for _, r in ipairs(db.recipes) do
       local c = learnCost(r)
@@ -1227,8 +1227,8 @@ function E.new(db, env)
       route.ban = b
       return route
     end
-    if not any then return run({}, ctx.planAhead) end
-    local cur, tries = run({}, ctx.plan), 0
+    if not any then return run({}, aheadOnce) end
+    local cur, tries = run({}, planOnce), 0
     while tries < 8 and #cur.learn.list > 0 do
       local cands = {}
       for i, e in ipairs(cur.learn.list) do cands[i] = e end
@@ -1242,7 +1242,7 @@ function E.new(db, env)
         local b2 = {}
         for id in pairs(cur.ban) do b2[id] = true end
         b2[cands[i].r.id] = true
-        local alt = run(b2, ctx.plan)
+        local alt = run(b2, planOnce)
         tries = tries + 1
         if not routeNoWorse(cur, alt) then
           better = alt
@@ -1252,16 +1252,39 @@ function E.new(db, env)
       if not better then break end
       cur = better
     end
-    local best = run(all, ctx.planAhead)
+    local best = run(all, aheadOnce)
     local without = best.tot
     if #cur.learn.list > 0 then
-      local alt = run(cur.ban, ctx.planAhead)
+      local alt = run(cur.ban, aheadOnce)
       if not routeNoWorse(best, alt) then best = alt end
     end
     setBan(best.ban)
     best.without = without
     return best
   end
+
+  -- Time worth less than the default ("Cheapest" is time worth nothing) must never give a worse route than the
+  -- default does. The route is built one skill point at a time: with time counting for little it changes recipe on
+  -- small differences, does not go back to a recipe it left while another gives a point, and can end in a dear
+  -- step it had no choice about (seen: Blacksmithing 163 to 200, 35g at the default, 79g with time worth nothing).
+  -- So below the default the route is planned twice, with the context's own value and with the default, and the
+  -- better one by the context's OWN measure (routeNoWorse) is kept. At the default and above, and in "time" mode,
+  -- nothing changes. Each of the three planners does this once, at the top: the passes inside it plan plainly.
+  local function neverWorse(planner)
+    return function(prof, from, to, stock)
+      local route = planner(prof, from, to, stock)
+      local own, std = tonumber(o.timeValue), E.defaults.timeValue
+      if o.mode == "time" or not own or own >= std then return route end
+      o.timeValue = std
+      local ok, alt = pcall(planner, prof, from, to, stock)
+      o.timeValue = own
+      if not ok then error(alt, 0) end
+      if not routeNoWorse(route, alt) then route = alt end
+      if route.ban then setBan(route.ban) end   -- planBest leaves the context set to the route it returns
+      return route
+    end
+  end
+  ctx.plan, ctx.planAhead, ctx.planBest = neverWorse(planOnce), neverWorse(aheadOnce), neverWorse(bestOnce)
 
   -- What to buy and what to make for a list of route segments, priced by walking each item's ladder over the
   -- whole quantity. buy = { {item, qty, cost, short, how}, ... }, made = { {item, qty}, ... },
